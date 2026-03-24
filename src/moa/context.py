@@ -194,14 +194,25 @@ def build_context(path: str = ".") -> str:
         )
 
     # ── Directory ──────────────────────────────────────────────────────────
-    # Find project root (walk up to find marker files)
+    # Find project root: walk up from target, but stop at .git or home dir
     project_root = target
-    for parent in [target] + list(target.parents):
+    home = Path.home()
+    max_climb = 3  # Never walk more than 3 levels up
+
+    for i, parent in enumerate([target] + list(target.parents)):
+        if i > max_climb:
+            break
+        if parent == home or parent == home.parent:
+            break  # Never use home dir as project root
+        # Check for .git (definitive project boundary)
+        if (parent / ".git").exists():
+            project_root = parent
+            break
+        # Check for project markers
         for markers in PROJECT_MARKERS.values():
             for marker in markers:
                 if "*" not in marker and (parent / marker).exists():
                     project_root = parent
-                    break
 
     project_type = detect_project_type(project_root)
     project_name = project_root.name

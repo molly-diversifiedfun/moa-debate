@@ -62,9 +62,12 @@ def ask(
             console.print(f"[dim]📁 Injected context from: {context}[/dim]")
         query = f"{ctx}\n\nQuestion: {query}"
     elif not sys.stdin.isatty():
-        stdin_content = sys.stdin.read().strip()
-        if stdin_content:
-            query = f"[PIPED CONTEXT]\n{stdin_content}\n[/PIPED CONTEXT]\n\nQuestion: {query}"
+        # Only read stdin if there's actually data waiting (avoid hanging on piped output)
+        import select
+        if select.select([sys.stdin], [], [], 0.1)[0]:
+            stdin_content = sys.stdin.read().strip()
+            if stdin_content:
+                query = f"[PIPED CONTEXT]\n{stdin_content}\n[/PIPED CONTEXT]\n\nQuestion: {query}"
 
     effective_tier = "cascade" if cascade else ("adaptive" if adaptive else tier)
 
