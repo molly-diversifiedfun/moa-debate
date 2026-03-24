@@ -15,10 +15,12 @@ from .models import (
     ModelConfig, Tier, QueryCost, ReviewerRole,
     TIERS, REVIEWER_ROLES, get_aggregator,
     CLAUDE_HAIKU, CASCADE_CONFIDENCE_PROMPT,
+    AdaptiveTier, ADAPTIVE_TIERS, CLASSIFIER_MODEL,
 )
 from .prompts import (
     MOA_AGGREGATOR_SYSTEM, DEBATE_ROUND_SYSTEM, DEBATE_JUDGE_SYSTEM,
     CODE_REVIEW_AGGREGATOR, format_proposals, format_review_findings,
+    CLASSIFY_QUERY_PROMPT, DISAGREEMENT_SYNTHESIS_PROMPT, CONSENSUS_AGGREGATOR_PROMPT,
 )
 
 
@@ -345,6 +347,237 @@ async def run_cascade(
     premium_result["latency_ms"] = int((time.monotonic() - start) * 1000)
 
     return premium_result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ADAPTIVE FLOW — classify → route → propose → detect agreement → synthesize
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def classify_query(query: str) -> str:
+    """Classify a query as SIMPLE, STANDARD, or COMPLEX using a cheap model.
+
+    Returns the tier name string. Falls back to STANDARD on failure.
+    """
+    classifier = CLASSIFIER_MODEL if CLASSIFIER_MODEL.available else CLAUDE_HAIKU
+    if not classifier or not classifier.available:
+        return "STANDARD"
+
+    result = await call_model(
+        classifier,
+        [
+            {"role": "system", "content": CLASSIFY_QUERY_PROMPT},
+            {"role": "user", "content": query},
+        ],
+        temperature=0.0,
+        max_tokens=50,
+        timeout=10,
+    )
+
+    if not result:
+        return "STANDARD"
+
+    try:
+        text = result["content"].strip()
+        # Handle markdown-wrapped JSON
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        parsed = json.loads(text)
+        tier = parsed.get("tier", "STANDARD").upper()
+        if tier in ("SIMPLE", "STANDARD", "COMPLEX"):
+            return tier
+    except (json.JSONDecodeError, KeyError, AttributeError):
+        pass
+
+    # Fallback: look for keywords
+    text_upper = result["content"].upper()
+    if "SIMPLE" in text_upper:
+        return "SIMPLE"
+    if "COMPLEX" in text_upper:
+        return "COMPLEX"
+    return "STANDARD"
+
+
+def compute_agreement(proposals: list, model_names: list = None) -> dict:
+    """Compute agreement between proposals using word overlap similarity.
+
+    Returns dict with 'score' (0.0-1.0), 'consensus' (bool), and 'details'.
+    Uses Jaccard similarity on significant words (>3 chars) across all pairs.
+    """
+    if len(proposals) < 2:
+        return {"score": 1.0, "consensus": True, "details": "Only one proposal"}
+
+    def significant_words(text: str) -> set:
+        """Extract significant words (>3 chars, lowercase) from text."""
+        return {
+            w.lower().strip(".,!?;:()[]{}\"'")
+            for w in text.split()
+            if len(w) > 3
+        }
+
+    word_sets = [significant_words(p) for p in proposals]
+
+    # Pairwise Jaccard similarity
+    similarities = []
+    for i in range(len(word_sets)):
+        for j in range(i + 1, len(word_sets)):
+            intersection = word_sets[i] & word_sets[j]
+            union = word_sets[i] | word_sets[j]
+            if union:
+                similarities.append(len(intersection) / len(union))
+            else:
+                similarities.append(1.0)
+
+    avg_sim = sum(similarities) / len(similarities) if similarities else 1.0
+    consensus = avg_sim > 0.35  # Threshold: 35% word overlap = general agreement
+
+    return {
+        "score": round(avg_sim, 3),
+        "consensus": consensus,
+        "pairwise": similarities,
+        "details": f"avg_similarity={avg_sim:.3f}, pairs={len(similarities)}",
+    }
+
+
+async def run_adaptive(query: str) -> Dict[str, Any]:
+    """Adaptive routing: classify → route → propose → detect agreement → synthesize.
+
+    Replaces the cascade with a smarter, more cost-efficient flow:
+    1. Classify query as SIMPLE/STANDARD/COMPLEX (1 cheap call)
+    2. Route to appropriate proposer pool
+    3. Run proposers in parallel
+    4. Detect agreement/disagreement
+    5. If consensus: return best or synthesize
+    6. If disagreement: run attribution synthesis (shows which model said what)
+    """
+    _check_budget_or_raise()
+
+    start = time.monotonic()
+    cost = QueryCost(tier="adaptive")
+    model_status = {}
+
+    # ── Step 1: Classify ───────────────────────────────────────────────────
+    classification = await classify_query(query)
+    tier = ADAPTIVE_TIERS.get(classification, ADAPTIVE_TIERS["STANDARD"])
+    cost.tier = f"adaptive:{classification.lower()}"
+
+    available = [m for m in tier.proposers if m.available]
+    if not available:
+        # Fallback to any available models
+        from .models import available_models as get_available
+        available = get_available()[:3]
+
+    if not available:
+        raise RuntimeError("No models available. Check API keys.")
+
+    # ── Step 2: Parallel proposers ─────────────────────────────────────────
+    user_msg = [{"role": "user", "content": query}]
+    tasks = [call_model(m, user_msg) for m in available]
+    results = await asyncio.gather(*tasks)
+
+    proposals = []
+    model_names = []
+
+    for model, r in zip(available, results):
+        short = model.name.split("/")[-1] if "/" in model.name else model.name
+        if r:
+            proposals.append(r["content"])
+            model_names.append(short)
+            _update_cost(cost, r)
+            model_status[short] = f"✅ {r['latency_s']}s"
+        else:
+            model_status[short] = "❌ failed"
+
+    if not proposals:
+        raise RuntimeError("All proposers failed.")
+
+    # ── SIMPLE tier: return best proposal directly ─────────────────────────
+    if classification == "SIMPLE" or len(proposals) == 1:
+        # Pick the longest (most complete) response
+        best = max(proposals, key=len)
+        elapsed = int((time.monotonic() - start) * 1000)
+        record_spend(cost.estimated_cost_usd)
+        return {
+            "response": best,
+            "proposals": proposals,
+            "model_names": model_names,
+            "model_status": model_status,
+            "cost": cost,
+            "latency_ms": elapsed,
+            "classification": classification,
+            "consensus": True,
+            "agreement_score": 1.0,
+        }
+
+    # ── Step 3: Detect agreement ───────────────────────────────────────────
+    agreement = compute_agreement(proposals, model_names)
+
+    # ── Step 4: Synthesize based on agreement ─────────────────────────────
+    synthesizer = tier.synthesizer
+    if synthesizer and not synthesizer.available:
+        from .models import get_aggregator
+        synthesizer = get_aggregator(prefer_premium=(classification == "COMPLEX"))
+
+    if agreement["consensus"]:
+        # High agreement → clean synthesis (don't mention disagreement)
+        if synthesizer:
+            synth_prompt = CONSENSUS_AGGREGATOR_PROMPT.format(
+                proposals=format_proposals(proposals, model_names)
+            )
+            synth_result = await call_model(
+                synthesizer,
+                [{"role": "system", "content": synth_prompt}, {"role": "user", "content": query}],
+                temperature=0.1,
+                timeout=AGGREGATOR_TIMEOUT_SECONDS,
+            )
+            if synth_result:
+                _update_cost(cost, synth_result, is_aggregator=True)
+                synth_short = synthesizer.name.split("/")[-1] if "/" in synthesizer.name else synthesizer.name
+                model_status[f"→{synth_short}"] = f"✅ {synth_result['latency_s']}s"
+                response = synth_result["content"]
+            else:
+                response = max(proposals, key=len)
+        else:
+            response = max(proposals, key=len)
+    else:
+        # Disagreement → attribution synthesis (show who said what)
+        if synthesizer:
+            synth_prompt = DISAGREEMENT_SYNTHESIS_PROMPT.format(
+                query=query,
+                proposals=format_proposals(proposals, model_names)
+            )
+            synth_result = await call_model(
+                synthesizer,
+                [{"role": "system", "content": synth_prompt}, {"role": "user", "content": query}],
+                temperature=0.2,
+                timeout=AGGREGATOR_TIMEOUT_SECONDS,
+            )
+            if synth_result:
+                _update_cost(cost, synth_result, is_aggregator=True)
+                synth_short = synthesizer.name.split("/")[-1] if "/" in synthesizer.name else synthesizer.name
+                model_status[f"→{synth_short}"] = f"✅ {synth_result['latency_s']}s"
+                response = synth_result["content"]
+            else:
+                # Fallback: show all proposals with headers
+                parts = [f"## {name}\n{p}" for name, p in zip(model_names, proposals)]
+                response = "⚠️ Models disagreed. Here are their individual positions:\n\n" + "\n\n---\n\n".join(parts)
+        else:
+            parts = [f"## {name}\n{p}" for name, p in zip(model_names, proposals)]
+            response = "⚠️ Models disagreed. Here are their individual positions:\n\n" + "\n\n---\n\n".join(parts)
+
+    elapsed = int((time.monotonic() - start) * 1000)
+    record_spend(cost.estimated_cost_usd)
+
+    return {
+        "response": response,
+        "proposals": proposals,
+        "model_names": model_names,
+        "model_status": model_status,
+        "cost": cost,
+        "latency_ms": elapsed,
+        "classification": classification,
+        "consensus": agreement["consensus"],
+        "agreement_score": agreement["score"],
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════

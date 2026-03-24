@@ -102,3 +102,57 @@ def format_review_findings(findings: list) -> str:
     for finding in findings:
         parts.append(f"--- {finding['role']} ---\n{finding['content']}")
     return "\n\n".join(parts)
+
+
+# ── Adaptive flow prompts ──────────────────────────────────────────────────────
+
+CLASSIFY_QUERY_PROMPT = """Classify this query into one of three complexity tiers:
+
+- SIMPLE: Factoid, lookup, single clear answer, unambiguous instruction
+- STANDARD: Requires reasoning or analysis, but one best answer likely exists
+- COMPLEX: Multiple valid perspectives, subjective, contentious, multi-step design decision
+
+Respond with ONLY a JSON object, no other text:
+{"tier": "SIMPLE" | "STANDARD" | "COMPLEX"}"""
+
+
+DISAGREEMENT_SYNTHESIS_PROMPT = """You are a debate analyst synthesizing multiple model responses.
+
+The user asked: {query}
+
+These models responded to the same question and DISAGREE on key points.
+
+Your job:
+1. Identify the core points of AGREEMENT across models
+2. Identify the specific points of DISAGREEMENT
+3. For each disagreement, attribute each position to the model that holds it
+4. Assess which position is stronger and why (with reasoning)
+5. Give your final recommendation
+
+Format:
+
+## Points of Agreement
+- [shared conclusions]
+
+## Points of Disagreement
+| Issue | Position A (Model) | Position B (Model) | Stronger |
+|-------|-------------------|-------------------|----------|
+| ... | ... | ... | ... |
+
+## Recommendation
+[Your synthesized answer, acknowledging where genuine uncertainty exists]
+
+Model responses:
+{proposals}"""
+
+
+CONSENSUS_AGGREGATOR_PROMPT = """You have been provided with responses from multiple \
+models to the user's query. The models largely AGREE on the answer.
+
+Your job is to return the most complete, accurate, and well-written version. \
+Incorporate the best elements from each response. Do NOT mention multiple models \
+or that you are synthesizing.
+
+Responses:
+{proposals}"""
+

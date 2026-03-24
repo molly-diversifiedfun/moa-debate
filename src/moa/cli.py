@@ -13,8 +13,8 @@ from rich.table import Table
 from dotenv import load_dotenv
 
 from .config import MOA_HOME, GLOBAL_ENV, ensure_moa_home
-from .engine import run_moa, run_expert_review, run_debate, run_cascade
-from .models import TIERS, REVIEWER_ROLES, ALL_MODELS, CORE_MODELS, OPTIONAL_MODELS, available_models
+from .engine import run_moa, run_expert_review, run_debate, run_cascade, run_adaptive
+from .models import TIERS, REVIEWER_ROLES, ALL_MODELS, CORE_MODELS, OPTIONAL_MODELS, available_models, ADAPTIVE_TIERS
 from .cache import get_cached, set_cached
 from .history import log_query, get_history, get_history_stats
 
@@ -41,17 +41,18 @@ def _show_model_status(model_status: dict):
 def ask(
     query: str = typer.Argument(..., help="The question to send to the model ensemble"),
     tier: str = typer.Option("lite", "--tier", "-t", help="Routing tier: flash, lite, pro, ultra"),
-    cascade: bool = typer.Option(False, "--cascade", "-c", help="Use cascade flow: lite → evaluate → premium if needed"),
+    cascade: bool = typer.Option(False, "--cascade", "-c", help="Use legacy cascade flow"),
+    adaptive: bool = typer.Option(True, "--adaptive/--no-adaptive", "-a", help="Use adaptive routing (default)"),
     show_proposals: bool = typer.Option(False, "--proposals", "-p", help="Show individual model proposals"),
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw text without formatting"),
     no_cache: bool = typer.Option(False, "--no-cache", help="Bypass response cache"),
 ):
     """Run a Mixture-of-Agents query across multiple models.
 
-    Use --cascade for the best quality/cost tradeoff: starts cheap,
-    escalates to premium only when models disagree or confidence is low.
+    Default: adaptive routing (classifies query, selects models automatically).
+    Use --cascade for legacy flow. Use --tier for manual tier selection.
     """
-    effective_tier = "cascade" if cascade else tier
+    effective_tier = "cascade" if cascade else ("adaptive" if adaptive else tier)
 
     # ── Cache check ─────────────────────────────────────────────────────
     if not no_cache:
@@ -72,6 +73,9 @@ def ask(
     if cascade:
         with console.status("[bold cyan]Running cascade (lite → evaluate → premium if needed)...[/bold cyan]"):
             result = asyncio.run(run_cascade(query))
+    elif adaptive and not cascade:
+        with console.status("[bold cyan]Running adaptive (classify → route → propose → synthesize)...[/bold cyan]"):
+            result = asyncio.run(run_adaptive(query))
     else:
         if tier not in TIERS:
             console.print(f"[red]Unknown tier: {tier}. Options: {list(TIERS.keys())}[/red]")
@@ -116,9 +120,21 @@ def ask(
 
     # Title
     cost = result["cost"]
-    title_suffix = " 🔺 ESCALATED" if cost.escalated else ""
-    title_color = "red" if cost.escalated else "green"
-    title = f"[bold {title_color}]{cost.tier}{title_suffix}[/bold {title_color}]"
+    classification = result.get("classification", "")
+    agreement_score = result.get("agreement_score", None)
+    consensus = result.get("consensus", True)
+
+    if cost.escalated:
+        title_color = "red"
+        title = f"[bold red]{cost.tier} 🔺 ESCALATED[/bold red]"
+    elif not consensus:
+        title_color = "yellow"
+        title = f"[bold yellow]{cost.tier} ⚠️  DISAGREEMENT (similarity: {agreement_score:.0%})[/bold yellow]"
+    else:
+        title_color = "green"
+        title = f"[bold green]{cost.tier}[/bold green]"
+        if classification:
+            title += f" [dim]({classification})[/dim]"
 
     console.print(Panel(Markdown(result["response"]), title=title, border_style=title_color))
 

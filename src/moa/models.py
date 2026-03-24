@@ -271,6 +271,42 @@ TIERS = {
 }
 
 
+# ── Adaptive routing tiers (SIMPLE / STANDARD / COMPLEX) ──────────────────────
+# Used by run_adaptive() — classification determines which tier to use
+
+@dataclass
+class AdaptiveTier:
+    """An adaptive tier selected by query classification."""
+    proposers: List[ModelConfig]
+    synthesizer: Optional[ModelConfig]
+    max_calls: int
+    description: str
+
+ADAPTIVE_TIERS = {
+    "SIMPLE": AdaptiveTier(
+        proposers=[CLAUDE_HAIKU, GEMINI_FLASH],
+        synthesizer=None,  # No aggregation needed — return best
+        max_calls=2,
+        description="1-2 fast models, no synthesis",
+    ),
+    "STANDARD": AdaptiveTier(
+        proposers=[CLAUDE_SONNET, GPT_4_1, GEMINI_2_5_PRO],
+        synthesizer=CLAUDE_SONNET,
+        max_calls=4,
+        description="2-3 strong models → Sonnet synthesis",
+    ),
+    "COMPLEX": AdaptiveTier(
+        proposers=[CLAUDE_OPUS, GPT_5_4, GEMINI_2_5_PRO, CLAUDE_SONNET],
+        synthesizer=CLAUDE_OPUS,
+        max_calls=5,
+        description="3-4 frontier models → Opus synthesis with disagreement detection",
+    ),
+}
+
+# The classifier model — cheapest available
+CLASSIFIER_MODEL = GPT4O_MINI
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  CASCADE FLOW — lite pass → confidence check → premium verification
 # ══════════════════════════════════════════════════════════════════════════════
