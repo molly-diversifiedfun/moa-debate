@@ -50,11 +50,11 @@ CLAUDE_SONNET = ModelConfig(
 )
 
 CLAUDE_HAIKU = ModelConfig(
-    name="anthropic/claude-haiku-3-5-20241022",
+    name="anthropic/claude-haiku-4-5-20251001",
     provider="Anthropic",
     env_key="ANTHROPIC_API_KEY",
-    input_cost_per_mtok=0.80,
-    output_cost_per_mtok=4.00,
+    input_cost_per_mtok=1.00,
+    output_cost_per_mtok=5.00,
     temperature=0.3,
     strengths=["fast evaluation", "classification", "routing", "JSON output"],
 )
@@ -91,12 +91,12 @@ GPT4O_MINI = ModelConfig(
 # ── Google ─────────────────────────────────────────────────────────────────────
 
 GEMINI_3_1_PRO = ModelConfig(
-    name="gemini/gemini-3.1-pro",
+    name="gemini/gemini-2.0-flash",
     provider="Google",
     env_key="GEMINI_API_KEY",
-    input_cost_per_mtok=2.00,
-    output_cost_per_mtok=12.00,
-    strengths=["near-Opus quality", "1M context", "cost-efficient", "ARC-AGI reasoning"],
+    input_cost_per_mtok=0.10,
+    output_cost_per_mtok=0.40,
+    strengths=["fast reasoning", "1M context", "structured output", "agentic workflows"],
 )
 
 GEMINI_2_5_PRO = ModelConfig(
