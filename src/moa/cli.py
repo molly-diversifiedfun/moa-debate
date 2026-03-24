@@ -17,6 +17,7 @@ from .engine import run_moa, run_expert_review, run_debate, run_cascade, run_ada
 from .models import TIERS, REVIEWER_ROLES, ALL_MODELS, CORE_MODELS, OPTIONAL_MODELS, available_models, ADAPTIVE_TIERS
 from .cache import get_cached, set_cached
 from .history import log_query, get_history, get_history_stats
+from .context import build_context
 
 # Load .env files: project-local first, then global ~/.moa/.env
 load_dotenv()
@@ -43,6 +44,7 @@ def ask(
     tier: str = typer.Option("lite", "--tier", "-t", help="Routing tier: flash, lite, pro, ultra"),
     cascade: bool = typer.Option(False, "--cascade", "-c", help="Use legacy cascade flow"),
     adaptive: bool = typer.Option(True, "--adaptive/--no-adaptive", "-a", help="Use adaptive routing (default)"),
+    context: str = typer.Option(None, "--context", "-x", help="Path to project/dir/file for auto-context injection"),
     show_proposals: bool = typer.Option(False, "--proposals", "-p", help="Show individual model proposals"),
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw text without formatting"),
     no_cache: bool = typer.Option(False, "--no-cache", help="Bypass response cache"),
@@ -50,8 +52,20 @@ def ask(
     """Run a Mixture-of-Agents query across multiple models.
 
     Default: adaptive routing (classifies query, selects models automatically).
+    Use --context to auto-inject project structure and key files.
     Use --cascade for legacy flow. Use --tier for manual tier selection.
     """
+    # ── Context injection ──────────────────────────────────────────────────
+    if context:
+        ctx = build_context(context)
+        if not raw:
+            console.print(f"[dim]📁 Injected context from: {context}[/dim]")
+        query = f"{ctx}\n\nQuestion: {query}"
+    elif not sys.stdin.isatty():
+        stdin_content = sys.stdin.read().strip()
+        if stdin_content:
+            query = f"[PIPED CONTEXT]\n{stdin_content}\n[/PIPED CONTEXT]\n\nQuestion: {query}"
+
     effective_tier = "cascade" if cascade else ("adaptive" if adaptive else tier)
 
     # ── Cache check ─────────────────────────────────────────────────────
@@ -227,9 +241,20 @@ def debate(
     query: str = typer.Argument(..., help="The question to debate"),
     rounds: int = typer.Option(2, "--rounds", "-n", help="Number of debate rounds"),
     tier: str = typer.Option("pro", "--tier", "-t", help="Model tier"),
+    context: str = typer.Option(None, "--context", "-x", help="Path to project/dir/file for auto-context injection"),
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw text"),
 ):
-    """Run a multi-round debate where models revise based on each other."""
+    """Run a multi-round debate where models revise based on each other.
+
+    Use --context to inject project files for architecture debates.
+    """
+    # ── Context injection ──────────────────────────────────────────────────
+    if context:
+        ctx = build_context(context)
+        if not raw:
+            console.print(f"[dim]📁 Injected context from: {context}[/dim]")
+        query = f"{ctx}\n\nDebate question: {query}"
+
     available = TIERS.get(tier, TIERS["pro"]).available_proposers
     if len(available) < 2:
         console.print("[red]Debate requires at least 2 models with valid API keys.[/red]")
