@@ -7,6 +7,10 @@ from typing import List, Optional, Dict, Any
 
 from litellm import acompletion
 
+from .config import (
+    MODEL_TIMEOUT_SECONDS, AGGREGATOR_TIMEOUT_SECONDS, PROVIDER_CONCURRENCY,
+)
+from .budget import check_budget, record_spend
 from .models import (
     ModelConfig, Tier, QueryCost, ReviewerRole,
     TIERS, REVIEWER_ROLES, get_aggregator,
@@ -18,46 +22,100 @@ from .prompts import (
 )
 
 
-# ── Low-level model call ──────────────────────────────────────────────────────
+# ── Per-provider rate limiting ─────────────────────────────────────────────────
+
+_provider_semaphores: Dict[str, asyncio.Semaphore] = {}
+
+
+def _get_semaphore(provider: str) -> asyncio.Semaphore:
+    """Get or create a per-provider concurrency semaphore."""
+    if provider not in _provider_semaphores:
+        limit = PROVIDER_CONCURRENCY.get(provider, 5)
+        _provider_semaphores[provider] = asyncio.Semaphore(limit)
+    return _provider_semaphores[provider]
+
+
+def _check_budget_or_raise():
+    """Check daily budget and raise if exceeded."""
+    allowed, spend, cap = check_budget()
+    if not allowed:
+        raise RuntimeError(
+            f"Daily budget exceeded: ${spend:.4f} / ${cap:.2f}. "
+            f"Increase MAX_DAILY_SPEND_USD in config or wait until tomorrow."
+        )
+
+
+# ── Real cost calculation ──────────────────────────────────────────────────────
+
+def calculate_real_cost(model: ModelConfig, input_tokens: int, output_tokens: int) -> float:
+    """Calculate actual cost from real token counts."""
+    return (
+        model.input_cost_per_mtok * input_tokens / 1_000_000
+        + model.output_cost_per_mtok * output_tokens / 1_000_000
+    )
+
+
+# ── Low-level model call with timeout ─────────────────────────────────────────
 
 async def call_model(
     model: ModelConfig,
     messages: List[Dict[str, str]],
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
+    timeout: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Call a single model via LiteLLM with retry and graceful failure.
-    
-    Returns dict with 'content', 'input_tokens', 'output_tokens', 'model' 
-    or None on total failure.
+    """Call a single model via LiteLLM with timeout, retry, and graceful failure.
+
+    Returns dict with 'content', 'input_tokens', 'output_tokens', 'model',
+    'provider', 'cost_usd', 'latency_s' or None on total failure.
     """
     temp = temperature if temperature is not None else model.temperature
     max_tok = max_tokens or model.max_tokens
+    call_timeout = timeout or MODEL_TIMEOUT_SECONDS
+
+    start = time.monotonic()
+    last_error = None
 
     for attempt in range(3):
         try:
-            resp = await acompletion(
-                model=model.name,
-                messages=messages,
-                temperature=temp,
-                max_tokens=max_tok,
-            )
+            sem = _get_semaphore(model.provider)
+            async with sem:
+                resp = await asyncio.wait_for(
+                    acompletion(
+                        model=model.name,
+                        messages=messages,
+                        temperature=temp,
+                        max_tokens=max_tok,
+                    ),
+                    timeout=call_timeout,
+                )
+            elapsed = time.monotonic() - start
             usage = resp.get("usage", {})
+            input_tok = usage.get("prompt_tokens", 0)
+            output_tok = usage.get("completion_tokens", 0)
+
             return {
                 "content": resp.choices[0].message.content,
-                "input_tokens": usage.get("prompt_tokens", 0),
-                "output_tokens": usage.get("completion_tokens", 0),
+                "input_tokens": input_tok,
+                "output_tokens": output_tok,
+                "cost_usd": calculate_real_cost(model, input_tok, output_tok),
                 "model": model.name,
                 "provider": model.provider,
+                "latency_s": round(elapsed, 2),
             }
+        except asyncio.TimeoutError:
+            last_error = f"timeout ({call_timeout}s)"
+            break  # Don't retry timeouts
         except Exception as e:
+            last_error = str(e)[:100]
             if attempt < 2:
                 await asyncio.sleep(2 ** attempt)
-            else:
-                return None
+
+    # Return failure info (not None) so we can report what happened
+    return None
 
 
-def _update_cost(cost: QueryCost, result: Dict, is_aggregator: bool = False):
+def _update_cost(cost: QueryCost, result: Dict, model: ModelConfig = None, is_aggregator: bool = False):
     """Update cost tracker with a model call result."""
     if is_aggregator:
         cost.aggregator_calls += 1
@@ -65,6 +123,7 @@ def _update_cost(cost: QueryCost, result: Dict, is_aggregator: bool = False):
         cost.proposer_calls += 1
     cost.total_input_tokens += result["input_tokens"]
     cost.total_output_tokens += result["output_tokens"]
+    cost.estimated_cost_usd += result.get("cost_usd", 0.0)
     cost.models_used.append(result["model"])
 
 
@@ -77,10 +136,12 @@ async def run_moa(
     tier_name: str = "lite",
 ) -> Dict[str, Any]:
     """Run a 2-layer Mixture-of-Agents query.
-    
+
     Layer 1: Parallel proposers generate independent responses.
     Layer 2: Aggregator synthesizes proposals into one high-quality response.
     """
+    _check_budget_or_raise()
+
     tier = TIERS.get(tier_name)
     if not tier:
         raise ValueError(f"Unknown tier: {tier_name}. Options: {list(TIERS.keys())}")
@@ -102,11 +163,17 @@ async def run_moa(
 
     proposals = []
     model_names = []
-    for r in results:
+    model_status = {}
+
+    for model, r in zip(available, results):
+        short_name = model.name.split("/")[-1] if "/" in model.name else model.name
         if r:
             proposals.append(r["content"])
             model_names.append(r["provider"])
             _update_cost(cost, r)
+            model_status[short_name] = f"✅ {r['latency_s']}s"
+        else:
+            model_status[short_name] = "❌ failed"
 
     if not proposals:
         raise RuntimeError("All proposers failed. Check API keys and network.")
@@ -114,11 +181,11 @@ async def run_moa(
     # ── Flash tier: no aggregation ─────────────────────────────────────────
     if not tier.aggregator:
         elapsed = int((time.monotonic() - start) * 1000)
-        cost.estimated_cost_usd = tier.estimated_cost
         return {
             "response": proposals[0],
             "proposals": proposals,
             "model_names": model_names,
+            "model_status": model_status,
             "cost": cost,
             "latency_ms": elapsed,
         }
@@ -129,10 +196,10 @@ async def run_moa(
 
     if not aggregator:
         elapsed = int((time.monotonic() - start) * 1000)
-        cost.estimated_cost_usd = tier.estimated_cost
         return {
             "response": proposals[0], "proposals": proposals,
-            "model_names": model_names, "cost": cost, "latency_ms": elapsed,
+            "model_names": model_names, "model_status": model_status,
+            "cost": cost, "latency_ms": elapsed,
             "warning": "No aggregator available — returning first proposal",
         }
 
@@ -143,18 +210,26 @@ async def run_moa(
         aggregator,
         [{"role": "system", "content": system_prompt}, {"role": "user", "content": query}],
         temperature=0.1,
+        timeout=AGGREGATOR_TIMEOUT_SECONDS,
     )
 
     elapsed = int((time.monotonic() - start) * 1000)
+    agg_short = aggregator.name.split("/")[-1] if "/" in aggregator.name else aggregator.name
 
     if agg_result:
         _update_cost(cost, agg_result, is_aggregator=True)
-        cost.estimated_cost_usd = tier.estimated_cost
+        model_status[f"→{agg_short}"] = f"✅ {agg_result['latency_s']}s"
+    else:
+        model_status[f"→{agg_short}"] = "❌ failed"
+
+    # Record spend
+    record_spend(cost.estimated_cost_usd)
 
     return {
         "response": agg_result["content"] if agg_result else proposals[0],
         "proposals": proposals,
         "model_names": model_names,
+        "model_status": model_status,
         "cost": cost,
         "latency_ms": elapsed,
         "warning": None if agg_result else "Aggregator failed — returning first proposal",
@@ -171,16 +246,12 @@ async def run_cascade(
     premium_tier: str = "ultra",
 ) -> Dict[str, Any]:
     """Run a cascade: lite MoA pass → confidence evaluation → premium if needed.
-    
-    This is the best flow for maximizing quality while controlling cost.
-    Most queries resolve at the lite tier (~$0.05). Only ambiguous, high-stakes,
-    or disagreement-heavy queries escalate to premium (~$0.25 additional).
-    
+
     Flow:
-    1. Run lite MoA (3 cheap proposers → Sonnet)
+    1. Run lite MoA (cheap proposers → Sonnet)
     2. Haiku evaluates: are the models confident and in agreement?
     3. If confident → return lite result
-    4. If not → run premium MoA (4 frontier proposers → Opus) with lite result as context
+    4. If not → run premium MoA (frontier proposers → Opus) with lite result as context
     """
     start = time.monotonic()
 
@@ -190,34 +261,31 @@ async def run_cascade(
 
     # If only 1 proposer was available, skip confidence check — escalate
     if lite_cost.proposer_calls <= 1:
-        # Not enough diversity to trust lite pass, go to premium
         premium_result = await run_moa(query, tier_name=premium_tier)
         premium_result["cost"].tier = f"cascade:{lite_tier}→{premium_tier}"
         premium_result["cost"].escalated = True
+        premium_result["cost"].estimated_cost_usd += lite_cost.estimated_cost_usd
         premium_result["latency_ms"] = int((time.monotonic() - start) * 1000)
         return premium_result
 
     # ── Step 2: Confidence evaluation ──────────────────────────────────────
     evaluator = CLAUDE_HAIKU if CLAUDE_HAIKU.available else None
     if not evaluator:
-        # No evaluator available — use Gemini Flash or any cheap model
         from .models import GEMINI_FLASH, GPT4O_MINI
         evaluator = GEMINI_FLASH if GEMINI_FLASH.available else GPT4O_MINI
-    
+
     if not evaluator or not evaluator.available:
-        # Can't evaluate — return lite result as-is
         return lite_result
 
-    # Build evaluation context showing proposer agreement/disagreement
     eval_context = (
         f"Original query: {query}\n\n"
         f"Synthesized answer:\n{lite_result['response']}\n\n"
         f"Individual model responses:\n"
     )
-    for i, (name, proposal) in enumerate(
-        zip(lite_result.get("model_names", []), lite_result.get("proposals", []))
+    for name, proposal in zip(
+        lite_result.get("model_names", []), lite_result.get("proposals", [])
     ):
-        eval_context += f"\n--- {name} ---\n{proposal[:1500]}\n"  # Truncate for cost
+        eval_context += f"\n--- {name} ---\n{proposal[:1500]}\n"
 
     eval_result = await call_model(
         evaluator,
@@ -229,22 +297,20 @@ async def run_cascade(
         max_tokens=200,
     )
 
-    confident = True  # Default: trust lite result
+    confident = True
     escalation_reason = None
 
     if eval_result:
         _update_cost(lite_cost, eval_result)
         try:
-            # Parse JSON from evaluator
             text = eval_result["content"].strip()
-            # Handle markdown-wrapped JSON
             if text.startswith("```"):
                 text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
             judgment = json.loads(text)
             confident = judgment.get("confident", True)
             escalation_reason = judgment.get("reason", "")
         except (json.JSONDecodeError, KeyError):
-            confident = True  # Parse failure → trust lite
+            confident = True
 
     # ── Step 3: Return or escalate ─────────────────────────────────────────
     if confident:
@@ -253,7 +319,6 @@ async def run_cascade(
         return lite_result
 
     # ── Step 4: Premium verification pass ──────────────────────────────────
-    # Include lite result as context for the premium proposers
     premium_query = (
         f"{query}\n\n"
         f"[Context: A previous analysis produced this answer, but a confidence "
@@ -291,16 +356,24 @@ async def run_expert_review(
     context: str = "",
 ) -> Dict[str, Any]:
     """Run Expert Panel code review with 4 specialized reviewers.
-    
-    Security (GPT-4.1) + Architecture (Sonnet) + Performance (Gemini) + 
-    Correctness (DeepSeek R1) → Synthesizer
+
+    Security + Architecture + Performance + Correctness → Synthesizer
     """
+    from .config import MAX_DIFF_CHARS
+
+    _check_budget_or_raise()
+
     cost = QueryCost(tier="expert-panel")
     start = time.monotonic()
 
+    # Truncate oversized diffs
+    diff_truncated = False
+    if len(diff) > MAX_DIFF_CHARS:
+        diff = diff[:MAX_DIFF_CHARS]
+        diff_truncated = True
+
     review_prompt = f"Review this code change:\n\n{context}\n\n```diff\n{diff}\n```"
 
-    # Use primary model, fall back to secondary if unavailable
     available_roles = []
     for role in REVIEWER_ROLES:
         if role.model.available:
@@ -324,10 +397,15 @@ async def run_expert_review(
     results = await asyncio.gather(*tasks)
 
     findings = []
-    for (role, _), result in zip(available_roles, results):
+    model_status = {}
+    for (role, model), result in zip(available_roles, results):
+        short = model.name.split("/")[-1] if "/" in model.name else model.name
         if result:
             findings.append({"role": role.name, "content": result["content"]})
             _update_cost(cost, result)
+            model_status[role.name] = f"✅ {result['latency_s']}s ({short})"
+        else:
+            model_status[role.name] = f"❌ failed ({short})"
 
     if not findings:
         raise RuntimeError("All reviewers failed.")
@@ -341,7 +419,7 @@ async def run_expert_review(
         )
         return {
             "response": combined, "findings": findings, "cost": cost,
-            "latency_ms": elapsed,
+            "model_status": model_status, "latency_ms": elapsed,
             "warning": "No aggregator — returning raw findings",
         }
 
@@ -355,18 +433,25 @@ async def run_expert_review(
             {"role": "user", "content": f"Synthesize the review:\n\n```diff\n{diff[:3000]}\n```"},
         ],
         temperature=0.1,
+        timeout=AGGREGATOR_TIMEOUT_SECONDS,
     )
     elapsed = int((time.monotonic() - start) * 1000)
 
     if synth_result:
         _update_cost(cost, synth_result, is_aggregator=True)
+        agg_short = aggregator.name.split("/")[-1]
+        model_status[f"→Synthesizer"] = f"✅ {synth_result['latency_s']}s ({agg_short})"
 
-    return {
+    result = {
         "response": synth_result["content"] if synth_result else findings[0]["content"],
         "findings": findings,
+        "model_status": model_status,
         "cost": cost,
         "latency_ms": elapsed,
     }
+    if diff_truncated:
+        result["warning"] = f"Diff truncated to {MAX_DIFF_CHARS} chars. Full review may miss issues."
+    return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -379,9 +464,9 @@ async def run_debate(
     tier_name: str = "pro",
 ) -> Dict[str, Any]:
     """Run a multi-round debate where models revise based on each other.
-    
+
     Round 0: Independent responses
-    Rounds 1-N: Each model sees others' responses and revises  
+    Rounds 1-N: Each model sees others' responses and revises
     Final: Judge synthesizes final positions
     """
     tier = TIERS.get(tier_name)
@@ -395,6 +480,7 @@ async def run_debate(
     cost = QueryCost(tier=f"debate-{tier_name}")
     start = time.monotonic()
     all_rounds = []
+    model_status = {}
 
     # ── Round 0: Independent ───────────────────────────────────────────────
     tasks = [call_model(m, [{"role": "user", "content": query}]) for m in available]
@@ -402,11 +488,18 @@ async def run_debate(
 
     current_positions = {}
     for model, result in zip(available, results):
+        short = model.name.split("/")[-1] if "/" in model.name else model.name
         if result:
             current_positions[model.name] = result["content"]
             _update_cost(cost, result)
+            model_status[short] = f"✅ R0:{result['latency_s']}s"
+        else:
+            model_status[short] = "❌ failed R0"
 
     all_rounds.append(dict(current_positions))
+
+    if len(current_positions) < 2:
+        raise RuntimeError("Less than 2 models responded. Cannot debate.")
 
     # ── Debate rounds ──────────────────────────────────────────────────────
     for round_num in range(1, rounds + 1):
@@ -436,9 +529,11 @@ async def run_debate(
 
         results = await asyncio.gather(*revision_tasks)
         for model, result in zip(revision_models, results):
+            short = model.name.split("/")[-1] if "/" in model.name else model.name
             if result:
                 current_positions[model.name] = result["content"]
                 _update_cost(cost, result)
+                model_status[short] = f"✅ R{round_num}:{result['latency_s']}s"
 
         all_rounds.append(dict(current_positions))
 
@@ -449,7 +544,8 @@ async def run_debate(
     if not aggregator:
         return {
             "response": list(current_positions.values())[0],
-            "rounds": all_rounds, "cost": cost, "latency_ms": elapsed,
+            "rounds": all_rounds, "model_status": model_status,
+            "cost": cost, "latency_ms": elapsed,
         }
 
     final_text = format_proposals(
@@ -463,6 +559,7 @@ async def run_debate(
             {"role": "user", "content": query},
         ],
         temperature=0.1,
+        timeout=AGGREGATOR_TIMEOUT_SECONDS,
     )
 
     elapsed = int((time.monotonic() - start) * 1000)
@@ -472,6 +569,7 @@ async def run_debate(
     return {
         "response": judge_result["content"] if judge_result else list(current_positions.values())[0],
         "rounds": all_rounds,
+        "model_status": model_status,
         "cost": cost,
         "latency_ms": elapsed,
     }

@@ -1,10 +1,13 @@
 """FastAPI HTTP server for n8n webhook integration."""
 
-from fastapi import FastAPI, HTTPException
+import os
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional
 
 from .engine import run_moa, run_expert_review, run_debate, run_cascade
+from .budget import get_spend_summary
 
 
 class MoaRequest(BaseModel):
@@ -43,12 +46,30 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="MoA Debate System",
         description="Multi-model AI — MoA, Expert Panel, Cascade, and Debate",
-        version="0.2.0",
+        version="0.3.0",
     )
+
+    # ── Auth middleware ─────────────────────────────────────────────────────
+    @app.middleware("http")
+    async def auth_middleware(request: Request, call_next):
+        """Require X-MOA-Key header on all endpoints except /health."""
+        server_key = os.environ.get("MOA_SERVER_KEY")
+
+        # If no key is configured, skip auth (dev mode)
+        if server_key and request.url.path != "/health":
+            req_key = request.headers.get("X-MOA-Key", "")
+            if req_key != server_key:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid or missing X-MOA-Key header"},
+                )
+
+        return await call_next(request)
 
     @app.get("/health")
     async def health():
         from .models import TIERS, available_models
+        budget = get_spend_summary()
         return {
             "status": "ok",
             "available_models": len(available_models()),
@@ -56,6 +77,7 @@ def create_app() -> FastAPI:
                 name: len(tier.available_proposers)
                 for name, tier in TIERS.items()
             },
+            "budget": budget,
         }
 
     @app.post("/moa", response_model=MoaResponse)

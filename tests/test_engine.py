@@ -3,7 +3,7 @@
 import asyncio
 import os
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock, MagicMock
 
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 
@@ -44,7 +44,6 @@ def test_tier_definitions():
     assert TIERS["flash"].aggregator is None
     assert TIERS["lite"].aggregator is not None
     assert TIERS["ultra"].aggregator is not None
-    # Tiers should have optional_proposers field
     assert len(TIERS["lite"].optional_proposers) > 0
     assert len(TIERS["flash"].optional_proposers) == 0
 
@@ -103,9 +102,27 @@ def test_model_strengths():
         assert len(model.strengths) > 0, f"{model.name} has no strengths"
 
 
+def test_real_cost_calculation():
+    """calculate_real_cost should match expected formula."""
+    from moa.engine import calculate_real_cost
+    from moa.models import GEMINI_FLASH
+    # 1000 input tokens, 500 output tokens
+    cost = calculate_real_cost(GEMINI_FLASH, 1000, 500)
+    expected = (0.15 * 1000 / 1_000_000) + (0.60 * 500 / 1_000_000)
+    assert abs(cost - expected) < 0.000001
+
+
+def test_config_defaults():
+    """Config should have sensible defaults."""
+    from moa.config import MODEL_TIMEOUT_SECONDS, MAX_DAILY_SPEND_USD, MAX_DIFF_LINES
+    assert MODEL_TIMEOUT_SECONDS > 0
+    assert MAX_DAILY_SPEND_USD > 0
+    assert MAX_DIFF_LINES > 0
+
+
 @pytest.mark.asyncio
 async def test_call_model_handles_failure():
-    """call_model should return None after 3 failed attempts."""
+    """call_model should return None after failed attempts."""
     from moa.engine import call_model
     from moa.models import GEMINI_FLASH
 
@@ -114,3 +131,59 @@ async def test_call_model_handles_failure():
             GEMINI_FLASH, [{"role": "user", "content": "test"}]
         )
         assert result is None
+
+
+@pytest.mark.asyncio
+async def test_call_model_timeout():
+    """call_model should return None on timeout."""
+    from moa.engine import call_model
+    from moa.models import GEMINI_FLASH
+
+    async def slow_response(*args, **kwargs):
+        await asyncio.sleep(10)
+
+    with patch("moa.engine.acompletion", side_effect=slow_response):
+        result = await call_model(
+            GEMINI_FLASH,
+            [{"role": "user", "content": "test"}],
+            timeout=1,  # 1 second timeout
+        )
+        assert result is None
+
+
+@pytest.mark.asyncio
+async def test_call_model_returns_real_cost():
+    """call_model should include real cost_usd in result."""
+    from moa.engine import call_model
+    from moa.models import GEMINI_FLASH
+
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = "Hello!"
+    mock_response.get = lambda key, default=None: {
+        "usage": {"prompt_tokens": 100, "completion_tokens": 50}
+    }.get(key, default)
+
+    with patch("moa.engine.acompletion", return_value=mock_response):
+        result = await call_model(
+            GEMINI_FLASH,
+            [{"role": "user", "content": "test"}],
+        )
+        assert result is not None
+        assert "cost_usd" in result
+        assert result["cost_usd"] > 0
+        assert result["latency_s"] >= 0
+
+
+def test_core_optional_split():
+    """Core and optional model lists should be correct."""
+    from moa.models import CORE_MODELS, OPTIONAL_MODELS, ALL_MODELS
+    assert len(CORE_MODELS) == 9
+    assert len(OPTIONAL_MODELS) == 5
+    assert len(ALL_MODELS) == 14
+    # Core should only be Anthropic, OpenAI, Google
+    for m in CORE_MODELS:
+        assert m.provider in ("Anthropic", "OpenAI", "Google")
+    # Optional should be everything else
+    for m in OPTIONAL_MODELS:
+        assert m.provider not in ("Anthropic", "OpenAI", "Google")
