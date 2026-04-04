@@ -15,9 +15,17 @@ moa ask --tier <flash|lite|pro|ultra> "<query>"  # Manual tier
 moa ask --context . "<query>"              # Inject project context
 moa ask --research deep "<query>"          # Multi-hop web research → single model
 moa ask --research off "<query>"           # Disable auto-research on disagreement
+moa ask --persona "DHH,Shreya Doshi" "<q>" # Persona-flavored responses
+moa ask --persona product "<query>"        # All personas in a category
+moa ask --layers 2 "<query>"              # Multi-layer verification pass
 moa review --staged                        # Expert panel code review
+moa review --staged --personas             # Famous engineer personas (Fowler/Beck/Hickey/Metz)
+moa review --staged --persona "Rich Hickey" # Specific persona
+moa review --staged --discourse            # Reviewers react to each other
 moa review < diff.patch                    # Review from stdin
 moa debate "<question>" --rounds 3         # Multi-round debate
+moa debate --style adversarial "<question>" # Angel/devil/judge pattern
+moa debate --persona architecture "<q>"    # Debate with persona perspectives
 moa serve --port 8787                      # HTTP API server
 moa verify                                 # Test model connectivity
 moa status                                 # Roster + budget + API key status
@@ -32,7 +40,7 @@ moa history --cost                         # Spend summary
 |--------|---------|-----------------|
 | `cli.py` | Typer CLI, 9 commands | `app = typer.Typer()` |
 | `engine.py` | Core logic: adaptive routing, cascade, debate, review | `moa_query()`, `cascade_query()`, `debate()`, `expert_review()` |
-| `models.py` | 14 models, 4 tiers, reviewer roles | `ModelConfig` dataclass, `Tier` dataclass, `ROSTER` dict |
+| `models.py` | 14 models, 4 tiers, 14 personas, reviewer roles | `ModelConfig`, `Tier`, `Persona`, `ReviewerRole`, `get_personas()` |
 | `server.py` | FastAPI HTTP API | 5 endpoints: `/moa`, `/cascade`, `/review`, `/debate`, `/health` |
 | `config.py` | Constants: timeouts, budget, rate limits | `MAX_DAILY_SPEND_USD`, `MODEL_TIMEOUT_SECONDS` |
 | `context.py` | Project context detection + injection | Auto-detects language, reads README/config, builds tree |
@@ -50,10 +58,10 @@ moa history --cost                         # Spend summary
 - **ultra** (~$0.25) — 3-5 frontier proposers → Opus aggregator
 
 ### 4 Query Modes
-1. **Adaptive Routing** (default) — Classifies query complexity → routes to minimal proposer set → detects consensus via Jaccard similarity (>35%). On disagreement, auto-searches web for reference material, re-asks with context.
-2. **Deep Research** (`--research deep`) — Multi-hop web search (2-3 rounds via Firecrawl) → single frontier model synthesis. For questions needing grounding in docs.
+1. **Adaptive Routing** (default) — Classifies by complexity + domain → routes to proposer pool → domain-capped agreement → pairwise ranking → synthesize. Auto-researches on disagreement.
+2. **Deep Research** (`--research deep`) — Multi-hop web search (2-3 rounds via Firecrawl) → single frontier model synthesis.
 3. **Cascade** (legacy) — Lite pass → Haiku evaluates confidence → escalates to ultra if low
-4. **Debate** — Multi-round: independent responses → models see each other → revise → judge synthesizes
+4. **Debate** — Challenge round → multi-round revision → convergence exit → judge. Supports peer (default) and adversarial (angel/devil/judge) styles.
 
 ### Expert Panel Code Review
 4 specialist reviewers with primary + fallback models:
@@ -61,6 +69,18 @@ moa history --cost                         # Spend summary
 - **Architecture** (Sonnet) — SOLID, coupling, async patterns
 - **Performance** (Gemini 2.5 Pro) — complexity, N+1, memory
 - **Correctness** (Gemini 3.1 Pro) — logic, edge cases, types
+
+Optional: `--discourse` for reviewer-to-reviewer reactions (AGREE/CHALLENGE/CONNECT/SURFACE)
+Optional: `--personas` or `--persona "name"` for famous engineer perspectives
+
+### 14 Personas, 5 Categories
+- **code**: Fowler, Beck, Hickey, Metz
+- **architecture**: Kelsey Hightower, Kleppmann, DHH
+- **product**: Shreya Doshi, Marty Cagan, April Dunford
+- **content**: David Ogilvy, Ann Handley
+- **builder**: Pieter Levels, Daniel Vassallo
+
+Select by name (`--persona "DHH,Kent Beck"`) or category (`--persona product`). Works on ask, debate, and review.
 
 ### State Files (all under ~/.moa/)
 - `cache/cache.db` — SQLite response cache
