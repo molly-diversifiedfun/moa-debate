@@ -569,6 +569,48 @@ async def pairwise_rank(
     return {"rankings": rankings, "best_index": rankings[0], "wins": wins}
 
 
+async def _verify_factual_claims(
+    query: str, proposals: List[str], model_names: List[str]
+) -> Optional[Dict[str, Any]]:
+    """Use a cheap model to check proposals for suspicious precision or inconsistency.
+
+    Returns dict with 'suspicious' (bool) and 'warning' (str) if issues found.
+    """
+    from .prompts import FACTUAL_VERIFICATION_PROMPT
+
+    model = CLASSIFIER_MODEL if CLASSIFIER_MODEL.available else CLAUDE_HAIKU
+    if not model or not model.available:
+        return None
+
+    proposals_text = format_proposals(proposals[:3], model_names[:3])
+    result = await call_model(
+        model,
+        [
+            {"role": "system", "content": FACTUAL_VERIFICATION_PROMPT},
+            {"role": "user", "content": f"Question: {query}\n\nResponses:\n{proposals_text}"},
+        ],
+        temperature=0.0,
+        max_tokens=200,
+        timeout=10,
+    )
+
+    if not result:
+        return None
+
+    try:
+        text = result["content"].strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        parsed = json.loads(text)
+        return {
+            "suspicious": parsed.get("suspicious", False),
+            "warning": parsed.get("warning", ""),
+            "claims_checked": parsed.get("claims", []),
+        }
+    except (json.JSONDecodeError, KeyError, AttributeError):
+        return None
+
+
 async def run_adaptive(query: str, research_mode: str = "auto") -> Dict[str, Any]:
     """Adaptive routing: classify → route → propose → detect agreement → synthesize.
 
@@ -650,7 +692,33 @@ async def run_adaptive(query: str, research_mode: str = "auto") -> Dict[str, Any
     threshold = DOMAIN_CONFIDENCE_CAPS.get(domain, DEFAULT_AGREEMENT_THRESHOLD)
     agreement["consensus"] = agreement["score"] > threshold
 
-    # ── Step 3b: Pairwise ranking (for STANDARD/COMPLEX) ──────────────────
+    # ── Step 3b: Correlated confidence warning ─────────────────────────────
+    # High agreement on niche/complex topics is suspicious — models may share
+    # the same training gap and be confidently wrong together.
+    confidence_warning = None
+    if (
+        agreement["consensus"]
+        and agreement["score"] > 0.6
+        and classification in ("STANDARD", "COMPLEX")
+        and domain in ("TECHNICAL", "FACTUAL")
+    ):
+        confidence_warning = (
+            "High agreement on a specific topic. Models may share the same "
+            "training data gap. Consider verifying key claims independently."
+        )
+
+    # ── Step 3c: Factual verification (for FACTUAL domain with high agreement) ─
+    verification_result = None
+    if (
+        agreement["consensus"]
+        and domain == "FACTUAL"
+        and classification != "SIMPLE"
+    ):
+        verification_result = await _verify_factual_claims(query, proposals, model_names)
+        if verification_result and verification_result.get("suspicious"):
+            confidence_warning = verification_result["warning"]
+
+    # ── Step 3d: Pairwise ranking (for STANDARD/COMPLEX) ─────────────────
     ranking = await pairwise_rank(proposals, model_names)
 
     # ── Step 4: Synthesize based on agreement ─────────────────────────────
@@ -740,7 +808,10 @@ async def run_adaptive(query: str, research_mode: str = "auto") -> Dict[str, Any
     elapsed = int((time.monotonic() - start) * 1000)
     record_spend(cost.estimated_cost_usd)
 
-    return {
+    # ── Session memory: log key claims for cross-query consistency ───────
+    _log_session_claims(query, response)
+
+    result_dict = {
         "response": response,
         "proposals": proposals,
         "model_names": model_names,
@@ -755,6 +826,63 @@ async def run_adaptive(query: str, research_mode: str = "auto") -> Dict[str, Any
         "ranking": ranking,
         "researched": research_context is not None,
     }
+    if confidence_warning:
+        result_dict["confidence_warning"] = confidence_warning
+    if verification_result:
+        result_dict["verification"] = verification_result
+
+    return result_dict
+
+
+# ── Session memory for cross-query consistency ────────────────────────────────
+
+_SESSION_FILE = None
+
+
+def _get_session_file():
+    """Get or create the session file path for today."""
+    global _SESSION_FILE
+    if _SESSION_FILE is None:
+        from .config import MOA_HOME
+        import datetime
+        today = datetime.date.today().isoformat()
+        session_dir = MOA_HOME / "sessions"
+        session_dir.mkdir(exist_ok=True)
+        _SESSION_FILE = session_dir / f"session-{today}.jsonl"
+    return _SESSION_FILE
+
+
+def _log_session_claims(query: str, response: str):
+    """Log query + response summary to session file for consistency checking."""
+    import datetime
+    session_file = _get_session_file()
+    entry = {
+        "ts": datetime.datetime.now().isoformat(),
+        "query": query[:200],
+        "response_preview": response[:500],
+    }
+    try:
+        with open(session_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass  # Non-critical — don't crash on write failure
+
+
+def get_session_context() -> str:
+    """Read today's session history for consistency checking."""
+    session_file = _get_session_file()
+    if not session_file.exists():
+        return ""
+    try:
+        lines = session_file.read_text().strip().split("\n")
+        recent = lines[-5:]  # Last 5 queries
+        parts = []
+        for line in recent:
+            entry = json.loads(line)
+            parts.append(f"Q: {entry['query']}\nA: {entry['response_preview']}")
+        return "\n\n---\n\n".join(parts)
+    except (OSError, json.JSONDecodeError):
+        return ""
 
 
 # ══════════════════════════════════════════════════════════════════════════════

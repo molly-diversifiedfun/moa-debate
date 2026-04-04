@@ -316,6 +316,21 @@ Rules:
 - Be specific and technical — the user chose deep research because they need precision"""
 
 
+FACTUAL_VERIFICATION_PROMPT = """You are a fact-checker. Multiple AI models answered the \
+same question. Check their responses for:
+
+1. Suspicious precision — exact numbers, dates, or statistics that seem too specific to be \
+   recalled accurately (e.g., "47.3 million" for a population that's hard to measure)
+2. Internal inconsistency — do the models cite different numbers for the same claim?
+3. Confident claims without qualification — are they stating uncertain things as facts?
+
+Respond with ONLY a JSON object:
+{"suspicious": true/false, "warning": "one sentence explaining the concern", "claims": ["claim 1 to verify", "claim 2"]}
+
+If everything looks consistent and well-qualified, return:
+{"suspicious": false, "warning": "", "claims": []}"""
+
+
 CONSENSUS_AGGREGATOR_PROMPT = """You have been provided with responses from multiple \
 models to the user's query. The models largely AGREE on the answer.
 

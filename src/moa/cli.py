@@ -110,6 +110,20 @@ def _display_rich_result(result: dict, con: Console):
         if researched:
             conf_parts.append("  [blue]🔍 Models initially disagreed → web search → re-asked with docs[/blue]")
 
+        # Confidence warning (correlated hallucination risk)
+        confidence_warning = result.get("confidence_warning")
+        if confidence_warning:
+            conf_parts.append(f"  [yellow]⚠️  {confidence_warning}[/yellow]")
+
+        # Factual verification results
+        verification = result.get("verification")
+        if verification and verification.get("suspicious"):
+            conf_parts.append(f"  [red]🔬 Verification: {verification['warning']}[/red]")
+            claims = verification.get("claims_checked", [])
+            if claims:
+                for claim in claims[:3]:
+                    conf_parts.append(f"     → {claim}")
+
         con.print("\n".join(conf_parts))
         con.print()
 
