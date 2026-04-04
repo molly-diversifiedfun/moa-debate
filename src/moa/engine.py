@@ -1198,12 +1198,48 @@ async def _run_adversarial_debate(
     if angel_r:
         _update_cost(cost, angel_r)
         model_status[f"👼 {angel_short}"] = f"✅ R0:{angel_r['latency_s']}s"
+    else:
+        model_status[f"👼 {angel_short}"] = "❌ failed R0"
     if devil_r:
         _update_cost(cost, devil_r)
         model_status[f"😈 {devil_short}"] = f"✅ R0:{devil_r['latency_s']}s"
+    else:
+        model_status[f"😈 {devil_short}"] = "❌ failed R0"
+
+    # If one side failed, try fallback models
+    if not angel_pos or not devil_pos:
+        remaining = [m for m in available[2:] if m.available] if len(available) > 2 else []
+        if not angel_pos and remaining:
+            angel_model = remaining[0]
+            angel_short = angel_model.name.split("/")[-1] if "/" in angel_model.name else angel_model.name
+            fb = await call_model(angel_model, [
+                {"role": "system", "content": DEBATE_ANGEL_SYSTEM.format(previous_round="This is your opening argument.")},
+                {"role": "user", "content": query},
+            ])
+            if fb:
+                angel_pos = fb["content"]
+                _update_cost(cost, fb)
+                model_status[f"👼 {angel_short}"] = f"✅ R0:{fb['latency_s']}s (fallback)"
+        if not devil_pos and remaining:
+            fb_model = remaining[-1] if len(remaining) > 1 else remaining[0]
+            devil_short_fb = fb_model.name.split("/")[-1] if "/" in fb_model.name else fb_model.name
+            if fb_model.name != angel_model.name if not angel_pos else True:
+                fb = await call_model(fb_model, [
+                    {"role": "system", "content": DEBATE_DEVIL_SYSTEM.format(previous_round="This is your opening argument.")},
+                    {"role": "user", "content": query},
+                ])
+                if fb:
+                    devil_pos = fb["content"]
+                    devil_model = fb_model
+                    devil_short = devil_short_fb
+                    _update_cost(cost, fb)
+                    model_status[f"😈 {devil_short}"] = f"✅ R0:{fb['latency_s']}s (fallback)"
 
     if not angel_pos or not devil_pos:
-        raise RuntimeError("Both angel and devil must respond. Check API keys.")
+        raise RuntimeError(
+            "Adversarial debate requires 2 responding models. "
+            "Available models may be rate-limited or unavailable."
+        )
 
     all_rounds.append({"angel": angel_pos, "devil": devil_pos})
 
