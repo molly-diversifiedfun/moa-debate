@@ -20,7 +20,7 @@ from .models import (
 from .prompts import (
     MOA_AGGREGATOR_SYSTEM, DEBATE_ROUND_SYSTEM, DEBATE_JUDGE_SYSTEM,
     CODE_REVIEW_AGGREGATOR, format_proposals, format_review_findings,
-    CLASSIFY_QUERY_PROMPT, DISAGREEMENT_SYNTHESIS_PROMPT, CONSENSUS_AGGREGATOR_PROMPT,
+    CLASSIFY_QUERY_PROMPT, DISAGREEMENT_SYNTHESIS_PROMPT, CONSENSUS_AGGREGATOR_PROMPT, PAIRWISE_RANK_PROMPT,
     DEBATE_CHALLENGE_SYSTEM, DEBATE_REVISION_WITH_CHALLENGES_SYSTEM,
     DEBATE_ANGEL_SYSTEM, DEBATE_DEVIL_SYSTEM, DEBATE_ADVERSARIAL_JUDGE_SYSTEM,
 )
@@ -355,14 +355,25 @@ async def run_cascade(
 #  ADAPTIVE FLOW — classify → route → propose → detect agreement → synthesize
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def classify_query(query: str) -> str:
-    """Classify a query as SIMPLE, STANDARD, or COMPLEX using a cheap model.
+# Domain-specific agreement thresholds (from duh)
+DOMAIN_CONFIDENCE_CAPS = {
+    "FACTUAL": 0.45,     # High bar — models should agree on facts
+    "TECHNICAL": 0.40,   # Moderate — some implementation opinions OK
+    "CREATIVE": 0.30,    # Low bar — diversity is expected
+    "JUDGMENT": 0.25,    # Very low — genuine opinion splits normal
+    "STRATEGIC": 0.20,   # Lowest — complex decisions always diverge
+}
+DEFAULT_AGREEMENT_THRESHOLD = 0.35
 
-    Returns the tier name string. Falls back to STANDARD on failure.
+
+async def classify_query(query: str) -> Dict[str, str]:
+    """Classify a query's complexity tier and domain using a cheap model.
+
+    Returns dict with 'tier' and 'domain'. Falls back to STANDARD/TECHNICAL.
     """
     classifier = CLASSIFIER_MODEL if CLASSIFIER_MODEL.available else CLAUDE_HAIKU
     if not classifier or not classifier.available:
-        return "STANDARD"
+        return {"tier": "STANDARD", "domain": "TECHNICAL"}
 
     result = await call_model(
         classifier,
@@ -371,32 +382,36 @@ async def classify_query(query: str) -> str:
             {"role": "user", "content": query},
         ],
         temperature=0.0,
-        max_tokens=50,
+        max_tokens=100,
         timeout=10,
     )
 
     if not result:
-        return "STANDARD"
+        return {"tier": "STANDARD", "domain": "TECHNICAL"}
 
     try:
         text = result["content"].strip()
-        # Handle markdown-wrapped JSON
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         parsed = json.loads(text)
         tier = parsed.get("tier", "STANDARD").upper()
-        if tier in ("SIMPLE", "STANDARD", "COMPLEX"):
-            return tier
+        domain = parsed.get("domain", "TECHNICAL").upper()
+        if tier not in ("SIMPLE", "STANDARD", "COMPLEX"):
+            tier = "STANDARD"
+        if domain not in DOMAIN_CONFIDENCE_CAPS:
+            domain = "TECHNICAL"
+        return {"tier": tier, "domain": domain}
     except (json.JSONDecodeError, KeyError, AttributeError):
         pass
 
     # Fallback: look for keywords
     text_upper = result["content"].upper()
+    tier = "STANDARD"
     if "SIMPLE" in text_upper:
-        return "SIMPLE"
-    if "COMPLEX" in text_upper:
-        return "COMPLEX"
-    return "STANDARD"
+        tier = "SIMPLE"
+    elif "COMPLEX" in text_upper:
+        tier = "COMPLEX"
+    return {"tier": tier, "domain": "TECHNICAL"}
 
 
 def compute_agreement(proposals: list, model_names: list = None) -> dict:
@@ -440,6 +455,72 @@ def compute_agreement(proposals: list, model_names: list = None) -> dict:
     }
 
 
+async def pairwise_rank(
+    proposals: List[str], model_names: List[str]
+) -> Dict[str, Any]:
+    """Use a cheap model to rank proposals via pairwise comparison (from LLM-Blender).
+
+    Returns dict with 'rankings' (sorted best→worst) and 'best_index'.
+    """
+    from .prompts import PAIRWISE_RANK_PROMPT
+
+    model = CLASSIFIER_MODEL if CLASSIFIER_MODEL.available else CLAUDE_HAIKU
+    if not model or not model.available or len(proposals) < 2:
+        return {"rankings": list(range(len(proposals))), "best_index": 0}
+
+    # Compare each pair (cap at 6 to control cost)
+    pairs = []
+    for i in range(len(proposals)):
+        for j in range(i + 1, len(proposals)):
+            pairs.append((i, j))
+
+    wins = [0] * len(proposals)
+
+    tasks = []
+    pair_indices = []
+    for i, j in pairs[:6]:
+        tasks.append(call_model(
+            model,
+            [
+                {"role": "system", "content": PAIRWISE_RANK_PROMPT},
+                {"role": "user", "content": (
+                    f"Response A ({model_names[i] if i < len(model_names) else 'Model ' + str(i)}):\n"
+                    f"{proposals[i][:2000]}\n\n"
+                    f"Response B ({model_names[j] if j < len(model_names) else 'Model ' + str(j)}):\n"
+                    f"{proposals[j][:2000]}"
+                )},
+            ],
+            temperature=0.0,
+            max_tokens=100,
+            timeout=10,
+        ))
+        pair_indices.append((i, j))
+
+    results = await asyncio.gather(*tasks)
+
+    for (i, j), result in zip(pair_indices, results):
+        if not result:
+            continue
+        try:
+            text = result["content"].strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            parsed = json.loads(text)
+            winner = parsed.get("winner", "TIE").upper()
+            if winner == "A":
+                wins[i] += 1
+            elif winner == "B":
+                wins[j] += 1
+            else:
+                wins[i] += 0.5
+                wins[j] += 0.5
+        except (json.JSONDecodeError, KeyError, AttributeError):
+            pass
+
+    rankings = sorted(range(len(proposals)), key=lambda x: wins[x], reverse=True)
+    return {"rankings": rankings, "best_index": rankings[0], "wins": wins}
+
+
 async def run_adaptive(query: str, research_mode: str = "auto") -> Dict[str, Any]:
     """Adaptive routing: classify → route → propose → detect agreement → synthesize.
 
@@ -462,7 +543,9 @@ async def run_adaptive(query: str, research_mode: str = "auto") -> Dict[str, Any
     model_status = {}
 
     # ── Step 1: Classify ───────────────────────────────────────────────────
-    classification = await classify_query(query)
+    query_class = await classify_query(query)
+    classification = query_class["tier"]
+    domain = query_class["domain"]
     tier = ADAPTIVE_TIERS.get(classification, ADAPTIVE_TIERS["STANDARD"])
     cost.tier = f"adaptive:{classification.lower()}"
 
@@ -498,7 +581,6 @@ async def run_adaptive(query: str, research_mode: str = "auto") -> Dict[str, Any
 
     # ── SIMPLE tier: return best proposal directly ─────────────────────────
     if classification == "SIMPLE" or len(proposals) == 1:
-        # Pick the longest (most complete) response
         best = max(proposals, key=len)
         elapsed = int((time.monotonic() - start) * 1000)
         record_spend(cost.estimated_cost_usd)
@@ -510,12 +592,18 @@ async def run_adaptive(query: str, research_mode: str = "auto") -> Dict[str, Any
             "cost": cost,
             "latency_ms": elapsed,
             "classification": classification,
+            "domain": domain,
             "consensus": True,
             "agreement_score": 1.0,
         }
 
-    # ── Step 3: Detect agreement ───────────────────────────────────────────
+    # ── Step 3: Detect agreement (domain-capped threshold) ────────────────
     agreement = compute_agreement(proposals, model_names)
+    threshold = DOMAIN_CONFIDENCE_CAPS.get(domain, DEFAULT_AGREEMENT_THRESHOLD)
+    agreement["consensus"] = agreement["score"] > threshold
+
+    # ── Step 3b: Pairwise ranking (for STANDARD/COMPLEX) ──────────────────
+    ranking = await pairwise_rank(proposals, model_names)
 
     # ── Step 4: Synthesize based on agreement ─────────────────────────────
     synthesizer = tier.synthesizer
@@ -541,9 +629,9 @@ async def run_adaptive(query: str, research_mode: str = "auto") -> Dict[str, Any
                 model_status[f"→{synth_short}"] = f"✅ {synth_result['latency_s']}s"
                 response = synth_result["content"]
             else:
-                response = max(proposals, key=len)
+                response = proposals[ranking["best_index"]]
         else:
-            response = max(proposals, key=len)
+            response = proposals[ranking["best_index"]]
     else:
         # Disagreement → try research-augmented re-ask, then attribution synthesis
         research_context = None
@@ -612,8 +700,11 @@ async def run_adaptive(query: str, research_mode: str = "auto") -> Dict[str, Any
         "cost": cost,
         "latency_ms": elapsed,
         "classification": classification,
+        "domain": domain,
         "consensus": agreement["consensus"],
         "agreement_score": agreement["score"],
+        "agreement_threshold": threshold,
+        "ranking": ranking,
         "researched": research_context is not None,
     }
 

@@ -170,14 +170,31 @@ def format_review_findings(findings: list) -> str:
 
 # ── Adaptive flow prompts ──────────────────────────────────────────────────────
 
-CLASSIFY_QUERY_PROMPT = """Classify this query into one of three complexity tiers:
+CLASSIFY_QUERY_PROMPT = """Classify this query into one of three complexity tiers AND one domain:
 
+Tiers:
 - SIMPLE: Factoid, lookup, single clear answer, unambiguous instruction
 - STANDARD: Requires reasoning or analysis, but one best answer likely exists
 - COMPLEX: Multiple valid perspectives, subjective, contentious, multi-step design decision
 
+Domains:
+- FACTUAL: Verifiable facts, definitions, lookups, "what is X?"
+- TECHNICAL: Implementation details, how-to, debugging, API usage
+- CREATIVE: Design, UX, naming, branding, content creation
+- JUDGMENT: Opinions, trade-offs, "should I X or Y?"
+- STRATEGIC: Architecture, business decisions, long-term planning
+
 Respond with ONLY a JSON object, no other text:
-{"tier": "SIMPLE" | "STANDARD" | "COMPLEX"}"""
+{"tier": "SIMPLE" | "STANDARD" | "COMPLEX", "domain": "FACTUAL" | "TECHNICAL" | "CREATIVE" | "JUDGMENT" | "STRATEGIC"}"""
+
+
+PAIRWISE_RANK_PROMPT = """Compare these two responses to the same question. \
+Which is more accurate, complete, and well-reasoned?
+
+Consider: factual correctness, depth of reasoning, completeness, and practical usefulness.
+
+Respond with ONLY a JSON object, no other text:
+{"winner": "A" or "B" or "TIE", "reason": "one sentence"}"""
 
 
 DISAGREEMENT_SYNTHESIS_PROMPT = """You are a debate analyst synthesizing multiple model responses.
