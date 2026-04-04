@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "command": "bash hooks/moa-review.sh",
+        "description": "Send edited file diffs to MoA Expert Panel for code review (requires moa serve running)"
+      }
+    ]
+  }
+}

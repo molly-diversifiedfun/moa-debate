@@ -146,6 +146,45 @@ Model responses:
 {proposals}"""
 
 
+# ── Research prompts ──────────────────────────────────────────────────────────
+
+SEARCH_QUERY_DERIVATION_PROMPT = """Given a user's question, derive 2-3 focused web search queries \
+that would find authoritative documentation, official docs, or technical references to help answer it.
+
+Rules:
+- Make queries specific and technical (not the original question verbatim)
+- Target official documentation, GitHub repos, RFCs, or authoritative sources
+- If the question mentions a specific tool/library/framework, include its name
+- Keep each query under 10 words
+
+Respond with ONLY a JSON object, no other text:
+{"queries": ["search query 1", "search query 2"]}"""
+
+
+IDENTIFY_GAPS_PROMPT = """You have initial research for a question. Identify what's still \
+missing or unclear that would require additional searches.
+
+Rules:
+- Only suggest follow-up queries if there are genuine gaps
+- Target specific missing details, not broad topics
+- If the research is sufficient, return an empty list
+- Keep each query under 10 words
+
+Respond with ONLY a JSON object, no other text:
+{"queries": ["follow-up query 1", "follow-up query 2"]}"""
+
+
+DEEP_RESEARCH_SYNTHESIS_PROMPT = """You are answering a question using research gathered \
+from web sources. The research context is provided below.
+
+Rules:
+- Ground your answer in the provided sources
+- Cite sources by name/URL when making specific claims
+- If sources conflict, note the conflict and reason about which is more authoritative
+- If the research doesn't fully answer the question, say what's still uncertain
+- Be specific and technical — the user chose deep research because they need precision"""
+
+
 CONSENSUS_AGGREGATOR_PROMPT = """You have been provided with responses from multiple \
 models to the user's query. The models largely AGREE on the answer.
 

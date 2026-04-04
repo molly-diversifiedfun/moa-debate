@@ -13,7 +13,7 @@ from rich.table import Table
 from dotenv import load_dotenv
 
 from .config import MOA_HOME, GLOBAL_ENV, ensure_moa_home
-from .engine import run_moa, run_expert_review, run_debate, run_cascade, run_adaptive
+from .engine import run_moa, run_expert_review, run_debate, run_cascade, run_adaptive, run_deep_research
 from .models import TIERS, REVIEWER_ROLES, ALL_MODELS, CORE_MODELS, OPTIONAL_MODELS, available_models, ADAPTIVE_TIERS
 from .cache import get_cached, set_cached
 from .history import log_query, get_history, get_history_stats
@@ -48,12 +48,14 @@ def ask(
     show_proposals: bool = typer.Option(False, "--proposals", "-p", help="Show individual model proposals"),
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw text without formatting"),
     no_cache: bool = typer.Option(False, "--no-cache", help="Bypass response cache"),
+    research: str = typer.Option("auto", "--research", "-R", help="Research mode: auto, lite, deep, off"),
 ):
     """Run a Mixture-of-Agents query across multiple models.
 
     Default: adaptive routing (classifies query, selects models automatically).
     Use --context to auto-inject project structure and key files.
     Use --cascade for legacy flow. Use --tier for manual tier selection.
+    Use --research deep for thorough multi-hop web research.
     """
     # ── Context injection ──────────────────────────────────────────────────
     if context:
@@ -87,12 +89,44 @@ def ask(
             return
 
     # ── Run models ──────────────────────────────────────────────────────
-    if cascade:
+    if research == "deep":
+        with console.status("[bold cyan]Deep research (searching → reading → synthesizing)...[/bold cyan]"):
+            try:
+                result = asyncio.run(run_deep_research(query))
+            except RuntimeError as e:
+                console.print(f"[red]{e}[/red]")
+                raise typer.Exit(1)
+        # Deep research has its own display format
+        set_cached(query, "deep-research", result)
+        cost = result["cost"]
+        log_query(
+            query=query, tier=cost.tier, cost_usd=cost.estimated_cost_usd,
+            models_used=cost.models_used, escalated=False,
+            latency_ms=result["latency_ms"],
+            response_preview=result["response"][:500],
+        )
+        if raw:
+            print(result["response"])
+            return
+        # Show research steps
+        for step in result.get("research_steps", []):
+            console.print(f"[dim]  🔍 {step}[/dim]")
+        console.print(Panel(
+            Markdown(result["response"]),
+            title="[bold blue]deep-research[/bold blue]",
+            border_style="blue",
+        ))
+        if result.get("model_status"):
+            _show_model_status(result["model_status"])
+        console.print(f"[dim]{cost.summary()} | ⏱  {result['latency_ms']}ms[/dim]")
+        return
+
+    elif cascade:
         with console.status("[bold cyan]Running cascade (lite → evaluate → premium if needed)...[/bold cyan]"):
             result = asyncio.run(run_cascade(query))
     elif adaptive and not cascade:
         with console.status("[bold cyan]Running adaptive (classify → route → propose → synthesize)...[/bold cyan]"):
-            result = asyncio.run(run_adaptive(query))
+            result = asyncio.run(run_adaptive(query, research_mode=research))
     else:
         if tier not in TIERS:
             console.print(f"[red]Unknown tier: {tier}. Options: {list(TIERS.keys())}[/red]")
@@ -141,9 +175,14 @@ def ask(
     agreement_score = result.get("agreement_score", None)
     consensus = result.get("consensus", True)
 
+    researched = result.get("researched", False)
+
     if cost.escalated:
         title_color = "red"
         title = f"[bold red]{cost.tier} 🔺 ESCALATED[/bold red]"
+    elif researched:
+        title_color = "blue"
+        title = f"[bold blue]{cost.tier} 🔍 RESEARCHED[/bold blue]"
     elif not consensus:
         title_color = "yellow"
         title = f"[bold yellow]{cost.tier} ⚠️  DISAGREEMENT (similarity: {agreement_score:.0%})[/bold yellow]"

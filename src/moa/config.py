@@ -33,6 +33,10 @@ MAX_DIFF_CHARS = 50_000             # Hard limit on diff size sent to models
 # ── Cache ──────────────────────────────────────────────────────────────────────
 CACHE_TTL_HOURS = 1                 # Response cache time-to-live
 
+# ── Research ──────────────────────────────────────────────────────────────────
+RESEARCH_CONTEXT_MAX_CHARS_LITE = 4096   # Max chars for lite search context
+RESEARCH_CONTEXT_MAX_CHARS_DEEP = 12288  # Max chars for deep research context
+
 # ── Initialization ─────────────────────────────────────────────────────────────
 def ensure_moa_home():
     """Create ~/.moa/ directory structure if it doesn't exist."""

@@ -438,7 +438,7 @@ def compute_agreement(proposals: list, model_names: list = None) -> dict:
     }
 
 
-async def run_adaptive(query: str) -> Dict[str, Any]:
+async def run_adaptive(query: str, research_mode: str = "auto") -> Dict[str, Any]:
     """Adaptive routing: classify → route → propose → detect agreement → synthesize.
 
     Replaces the cascade with a smarter, more cost-efficient flow:
@@ -447,7 +447,11 @@ async def run_adaptive(query: str) -> Dict[str, Any]:
     3. Run proposers in parallel
     4. Detect agreement/disagreement
     5. If consensus: return best or synthesize
-    6. If disagreement: run attribution synthesis (shows which model said what)
+    6. If disagreement: research-augmented re-ask (if enabled), then attribution synthesis
+
+    Args:
+        research_mode: "auto" (search on disagreement), "lite" (force search),
+                       "off" (disable research)
     """
     _check_budget_or_raise()
 
@@ -539,7 +543,39 @@ async def run_adaptive(query: str) -> Dict[str, Any]:
         else:
             response = max(proposals, key=len)
     else:
-        # Disagreement → attribution synthesis (show who said what)
+        # Disagreement → try research-augmented re-ask, then attribution synthesis
+        research_context = None
+        if research_mode != "off":
+            from .research import lite_search, get_search_provider
+            provider = get_search_provider()
+            if provider:
+                research_context = await lite_search(query, provider)
+
+        if research_context:
+            # Re-run same proposers with research context
+            augmented_query = (
+                f"[REFERENCE CONTEXT]\n{research_context}\n[/REFERENCE CONTEXT]\n\n{query}"
+            )
+            augmented_msg = [{"role": "user", "content": augmented_query}]
+            re_tasks = [call_model(m, augmented_msg) for m in available]
+            re_results = await asyncio.gather(*re_tasks)
+
+            re_proposals = []
+            re_model_names = []
+            for model, r in zip(available, re_results):
+                short = model.name.split("/")[-1] if "/" in model.name else model.name
+                if r:
+                    re_proposals.append(r["content"])
+                    re_model_names.append(short)
+                    _update_cost(cost, r)
+                    model_status[f"{short}:re"] = f"✅ {r['latency_s']}s"
+
+            if re_proposals:
+                proposals = re_proposals
+                model_names = re_model_names
+                cost.tier += "+research"
+
+        # Synthesize (works whether we re-asked or not)
         if synthesizer:
             synth_prompt = DISAGREEMENT_SYNTHESIS_PROMPT.format(
                 query=query,
@@ -557,7 +593,6 @@ async def run_adaptive(query: str) -> Dict[str, Any]:
                 model_status[f"→{synth_short}"] = f"✅ {synth_result['latency_s']}s"
                 response = synth_result["content"]
             else:
-                # Fallback: show all proposals with headers
                 parts = [f"## {name}\n{p}" for name, p in zip(model_names, proposals)]
                 response = "⚠️ Models disagreed. Here are their individual positions:\n\n" + "\n\n---\n\n".join(parts)
         else:
@@ -577,6 +612,68 @@ async def run_adaptive(query: str) -> Dict[str, Any]:
         "classification": classification,
         "consensus": agreement["consensus"],
         "agreement_score": agreement["score"],
+        "researched": research_context is not None,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  DEEP RESEARCH
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def run_deep_research(query: str) -> Dict[str, Any]:
+    """Deep research mode: multi-hop search → single frontier model synthesis."""
+    from .research import deep_research, get_search_provider
+    from .prompts import DEEP_RESEARCH_SYNTHESIS_PROMPT
+    from .models import get_aggregator
+
+    _check_budget_or_raise()
+    start = time.monotonic()
+    cost = QueryCost(tier="deep-research")
+
+    provider = get_search_provider()
+    if not provider:
+        raise RuntimeError(
+            "Deep research requires FIRECRAWL_API_KEY. "
+            "Set it in .env or environment."
+        )
+
+    progress_updates = []
+
+    def on_progress(msg):
+        progress_updates.append(msg)
+
+    context = await deep_research(query, provider, on_progress=on_progress)
+    if not context:
+        raise RuntimeError("Research produced no results. Try rephrasing the query.")
+
+    # Single frontier model with full context
+    model = get_aggregator(prefer_premium=True)
+    messages = [
+        {"role": "system", "content": DEEP_RESEARCH_SYNTHESIS_PROMPT},
+        {
+            "role": "user",
+            "content": f"[RESEARCH CONTEXT]\n{context}\n[/RESEARCH CONTEXT]\n\nQuestion: {query}",
+        },
+    ]
+
+    result = await call_model(
+        model, messages, temperature=0.2, timeout=AGGREGATOR_TIMEOUT_SECONDS
+    )
+    if not result:
+        raise RuntimeError("Synthesis model failed after research.")
+
+    _update_cost(cost, result, is_aggregator=True)
+    elapsed = int((time.monotonic() - start) * 1000)
+    record_spend(cost.estimated_cost_usd)
+
+    model_short = model.name.split("/")[-1] if "/" in model.name else model.name
+
+    return {
+        "response": result["content"],
+        "model_status": {model_short: f"✅ {result['latency_s']}s"},
+        "cost": cost,
+        "latency_ms": elapsed,
+        "research_steps": progress_updates,
     }
 
 

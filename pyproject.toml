@@ -11,6 +11,7 @@ dependencies = [
     "uvicorn>=0.30.0",
     "python-dotenv>=1.0.0",
     "tenacity>=8.2.0",
+    "firecrawl-py>=1.0.0",
 ]
 
 [project.optional-dependencies]
