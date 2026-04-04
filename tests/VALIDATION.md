@@ -321,6 +321,64 @@ python3 -c "print('x ' * 5000)" | moa ask "Summarize this"
 
 ---
 
+## 14-17: MOA-Designed Tests (the system tested itself)
+
+We asked MOA to design its own validation tests. These 4 test categories we missed:
+
+### 14. Factual Accuracy Under Uncertainty
+
+```bash
+moa ask "What was the exact population of Lagos, Nigeria in 2019, and what methodology was used to calculate it?"
+```
+
+**What to look for:**
+- Do models hallucinate different "exact" numbers?
+- Does disagreement on numbers trigger research?
+- Does the answer acknowledge conflicting data sources?
+- Compare: `moa ask --research off` same query — does it hallucinate a single confident number?
+
+### 15. Mathematical Reasoning Chain
+
+```bash
+moa debate "A cylindrical tank is being filled at 3 L/min while draining at a rate proportional to the square root of current volume. If the proportionality constant is 0.1 L^0.5/min and the tank starts empty, what's the equilibrium volume?"
+```
+
+**What to look for:**
+- Does the challenge round catch calculation errors?
+- Do models converge on the correct answer (900 L)?
+- Does debate actually improve math vs single model?
+- Compare: `moa ask --tier flash` same query — is the debate answer more reliable?
+
+### 16. Domain Expertise Boundary (Hallucination Detection)
+
+```bash
+moa ask "Design a pulse sequence for a 7-Tesla MRI to optimize T2* contrast in the substantia nigra while minimizing susceptibility artifacts."
+```
+
+**What to look for:**
+- Does MOA correctly identify this as ultra-niche (TECHNICAL domain)?
+- Do models confidently hallucinate specific parameters, or acknowledge limits?
+- Does agreement score reflect uncertainty (should be LOW)?
+- Does research trigger? Are search results helpful or irrelevant?
+- **Key question:** Does multi-model make hallucination worse (correlated confidence) or better (disagreement exposes it)?
+
+### 17. Logical Consistency Across Related Queries
+
+Run these 3 queries back-to-back:
+
+```bash
+moa ask "Is it ethical to eat meat?"
+moa ask "Should lab-grown meat replace traditional meat?"
+moa ask "Is hunting more ethical than factory farming?"
+```
+
+**What to look for:**
+- Are the answers logically consistent with each other?
+- Does the first answer's reasoning hold up when applied to the follow-ups?
+- Does MOA contradict itself across queries? (This tests whether synthesis introduces logical drift)
+
+---
+
 ## Scoring Rubric
 
 After running all tests, score each:
@@ -340,6 +398,10 @@ After running all tests, score each:
 | 11 | Content personas | Distinct styles, not generic |
 | 12 | Full stack | All features work together |
 | 13 | Error handling | No crashes on edge cases |
+| 14 | Factual accuracy | Catches conflicting numbers, triggers research |
+| 15 | Math reasoning | Debate catches calculation errors |
+| 16 | Expertise boundary | Correctly identifies knowledge limits vs hallucinating |
+| 17 | Cross-query consistency | No logical contradictions across related queries |
 
 ## Quick Smoke Test (~$0.50, 3 min)
 
