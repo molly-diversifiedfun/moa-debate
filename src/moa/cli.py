@@ -9,6 +9,8 @@ from pathlib import Path
 # Suppress LiteLLM's noisy stderr ("Give Feedback", "Provider List" messages)
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 logging.getLogger("litellm").setLevel(logging.WARNING)
+# Suppress Python 3.9 asyncio SSL cleanup errors ("Fatal error on SSL transport")
+logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
 import typer
 from rich.console import Console
@@ -21,6 +23,17 @@ import litellm
 litellm.suppress_debug_info = True
 
 from .config import MOA_HOME, GLOBAL_ENV, ensure_moa_home
+
+
+def _run_async(coro):
+    """Run an async coroutine, suppressing Python 3.9 SSL cleanup errors on exit."""
+    return asyncio.run(coro)
+
+
+def _suppress_ssl_errors_on_exit():
+    """Redirect stderr at exit to suppress Python 3.9 SSL transport cleanup noise."""
+    import os
+    sys.stderr = open(os.devnull, "w")
 from .engine import run_moa, run_expert_review, run_debate, run_cascade, run_adaptive, run_deep_research
 from .models import TIERS, REVIEWER_ROLES, ALL_MODELS, CORE_MODELS, OPTIONAL_MODELS, available_models, ADAPTIVE_TIERS
 from .cache import get_cached, set_cached
@@ -38,6 +51,10 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+# Suppress Python 3.9 SSL cleanup errors at process exit
+import atexit
+atexit.register(_suppress_ssl_errors_on_exit)
 
 
 def _show_model_status(model_status: dict):
@@ -242,7 +259,7 @@ def ask(
     if research == "deep":
         with console.status("[bold cyan]Deep research (searching → reading → synthesizing)...[/bold cyan]"):
             try:
-                result = asyncio.run(run_deep_research(query))
+                result = _run_async(run_deep_research(query))
             except RuntimeError as e:
                 console.print(f"[red]{e}[/red]")
                 raise typer.Exit(1)
@@ -273,10 +290,10 @@ def ask(
 
     elif cascade:
         with console.status("[bold cyan]Running cascade (lite → evaluate → premium if needed)...[/bold cyan]"):
-            result = asyncio.run(run_cascade(query))
+            result = _run_async(run_cascade(query))
     elif adaptive and not cascade:
         with console.status("[bold cyan]Running adaptive (classify → route → propose → synthesize)...[/bold cyan]"):
-            result = asyncio.run(run_adaptive(query, research_mode=research))
+            result = _run_async(run_adaptive(query, research_mode=research))
     else:
         if tier not in TIERS:
             console.print(f"[red]Unknown tier: {tier}. Options: {list(TIERS.keys())}[/red]")
@@ -291,7 +308,7 @@ def ask(
             f"[bold cyan]Running MoA ({tier})...[/bold cyan] "
             f"{len(available)} proposers → aggregator"
         ):
-            result = asyncio.run(run_moa(query, tier, layers=layers))
+            result = _run_async(run_moa(query, tier, layers=layers))
 
     # ── Cache store + history log ───────────────────────────────────────
     set_cached(query, effective_tier, result)
@@ -392,7 +409,7 @@ def review(
         f"[bold cyan]Running {label}{disc_label}...[/bold cyan] "
         f"{len(available)} reviewers → synthesizer"
     ):
-        result = asyncio.run(run_expert_review(diff, discourse=discourse, roles=review_roles))
+        result = _run_async(run_expert_review(diff, discourse=discourse, roles=review_roles))
 
     if raw:
         print(result["response"])
@@ -467,7 +484,7 @@ def debate(
         else f"[bold cyan]Debating ({rounds} rounds)...[/bold cyan] {len(available)} models"
     )
     with console.status(status_msg):
-        result = asyncio.run(run_debate(query, rounds=rounds, tier_name=tier, debate_style=style))
+        result = _run_async(run_debate(query, rounds=rounds, tier_name=tier, debate_style=style))
 
     if raw:
         print(result["response"])
@@ -515,7 +532,7 @@ def verify():
     console.print("[bold]Verifying model connections...[/bold]\n")
 
     with console.status("[cyan]Pinging models...[/cyan]"):
-        results = asyncio.run(verify_all_models())
+        results = _run_async(verify_all_models())
 
     table = Table(title="Model Verification")
     table.add_column("Model", style="cyan", max_width=45)
