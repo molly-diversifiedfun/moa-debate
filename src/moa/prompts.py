@@ -35,16 +35,23 @@ Other models' responses:
 {other_responses}"""
 
 DEBATE_JUDGE_SYSTEM = """You are judging a multi-round debate between AI models. \
-Each model has provided a final answer to the user's question after multiple rounds \
-of revision.
+Each model has refined their position through challenge and revision rounds.
 
-Your job:
-1. Identify points of agreement across all models (these are likely correct)
-2. Identify points of disagreement and determine which model's reasoning is strongest
-3. Flag any claims that no model adequately supported with evidence
-4. Synthesize the best elements into a single, authoritative answer
+Synthesize into this exact format:
 
-Do NOT mention the debate process. Write as if you are directly answering the user.
+## Verdict
+[The authoritative answer, incorporating the strongest reasoning from all models. Write as if directly answering the user.]
+
+## What the Debate Settled
+- [Bullet points of conclusions that ALL models converged on after debate — high confidence]
+
+## Remaining Disagreements
+- **[Model]**: [Position they held even after seeing challenges]
+[Only include genuine remaining splits. If models fully converged, write "None — models reached full consensus."]
+
+## Strongest Arguments
+- **[Model]** won on [topic]: [1 sentence why their reasoning was strongest]
+[Repeat for each model that made a notably strong argument]
 
 Final positions from each model:
 {final_positions}"""
@@ -116,16 +123,26 @@ unstated assumptions. Be rigorous and unsparing.
 {previous_round}"""
 
 DEBATE_ADVERSARIAL_JUDGE_SYSTEM = """You are judging an adversarial debate. An \
-Advocate argued FOR the proposition and a Critic argued AGAINST it, over multiple \
-rounds of revision.
+Advocate argued FOR and a Critic argued AGAINST, over multiple rounds.
 
-Your job:
-1. Identify where the Advocate made the strongest points
-2. Identify where the Critic exposed genuine weaknesses
-3. Determine which side had the stronger overall argument and why
-4. Synthesize a balanced, authoritative answer that accounts for both perspectives
+Synthesize into this exact format:
 
-Do NOT mention the debate process. Write as if you are directly answering the user.
+## Verdict
+[Your balanced, authoritative answer accounting for both perspectives. Write as if directly answering the user.]
+
+## Advocate's Strongest Points
+- [2-3 bullet points — the best arguments FOR]
+
+## Critic's Strongest Points
+- [2-3 bullet points — the best arguments AGAINST]
+
+## What Changed During Debate
+- [What did the Advocate concede or strengthen?]
+- [What did the Critic concede or strengthen?]
+- [Where did they converge, if anywhere?]
+
+## Bottom Line
+[1-2 sentences: which side had the stronger case overall, and what's the key factor that tips the balance?]
 
 Advocate's final position:
 {angel_position}
@@ -237,31 +254,24 @@ Respond with ONLY a JSON object, no other text:
 {"winner": "A" or "B" or "TIE", "reason": "one sentence"}"""
 
 
-DISAGREEMENT_SYNTHESIS_PROMPT = """You are a debate analyst synthesizing multiple model responses.
+DISAGREEMENT_SYNTHESIS_PROMPT = """You are synthesizing multiple model responses that DISAGREE on key points.
 
 The user asked: {query}
 
-These models responded to the same question and DISAGREE on key points.
+Synthesize into this exact format:
 
-Your job:
-1. Identify the core points of AGREEMENT across models
-2. Identify the specific points of DISAGREEMENT
-3. For each disagreement, attribute each position to the model that holds it
-4. Assess which position is stronger and why (with reasoning)
-5. Give your final recommendation
+## Answer
+[Your best synthesized answer, incorporating the strongest reasoning from all models. Write as if directly answering the user. Acknowledge genuine uncertainty where it exists.]
 
-Format:
+## Where Models Agreed
+- [Bullet points of shared conclusions — these are high-confidence]
 
-## Points of Agreement
-- [shared conclusions]
+## Where Models Differed
+- **[Model name]**: [Their distinct position, in 1-2 sentences]
+[Repeat for each model with a meaningfully different take]
 
-## Points of Disagreement
-| Issue | Position A (Model) | Position B (Model) | Stronger |
-|-------|-------------------|-------------------|----------|
-| ... | ... | ... | ... |
-
-## Recommendation
-[Your synthesized answer, acknowledging where genuine uncertainty exists]
+## Why This Answer
+[2-3 sentences explaining which model's reasoning was strongest and why. Name the models. This is the "show your work" that builds trust.]
 
 Model responses:
 {proposals}"""
@@ -309,9 +319,17 @@ Rules:
 CONSENSUS_AGGREGATOR_PROMPT = """You have been provided with responses from multiple \
 models to the user's query. The models largely AGREE on the answer.
 
-Your job is to return the most complete, accurate, and well-written version. \
-Incorporate the best elements from each response. Do NOT mention multiple models \
-or that you are synthesizing.
+Synthesize into this exact format:
+
+## Answer
+[The best, most complete answer. Write as if directly answering the user. Do NOT mention models or synthesis.]
+
+## Key Points of Agreement
+- [3-5 bullet points where all models converged — these are high-confidence conclusions]
+
+## Unique Contributions
+- **[Model name]**: [1 sentence — what unique insight this model added that others missed]
+[Repeat for each model that contributed something distinct. Skip models that added nothing new.]
 
 Responses:
 {proposals}"""

@@ -38,6 +38,110 @@ def _show_model_status(model_status: dict):
     console.print("  ".join(parts))
 
 
+def _confidence_bar(score: float, width: int = 20) -> str:
+    """Render a confidence bar: ██████████░░░░░░░░░░"""
+    filled = int(score * width)
+    empty = width - filled
+    return "█" * filled + "░" * empty
+
+
+def _confidence_label(score: float, consensus: bool, researched: bool) -> tuple:
+    """Return (label, color) for the confidence level."""
+    if researched and not consensus:
+        return "MODERATE — grounded in docs after initial split", "blue"
+    if score > 0.7:
+        return "HIGH — models converged on the same answer", "green"
+    if score > 0.4:
+        return "MODERATE — models mostly aligned with some variation", "yellow"
+    if score > 0.2:
+        return "MIXED — significant differences between models", "yellow"
+    return "LOW — models substantially disagree", "red"
+
+
+def _display_rich_result(result: dict, con: Console):
+    """Display a rich, trust-building output panel with confidence and attribution."""
+    cost = result["cost"]
+    classification = result.get("classification", "")
+    domain = result.get("domain", "")
+    agreement_score = result.get("agreement_score", None)
+    consensus = result.get("consensus", True)
+    researched = result.get("researched", False)
+    threshold = result.get("agreement_threshold", 0.35)
+
+    # ── Title ──────────────────────────────────────────────────────────
+    title_parts = [cost.tier]
+    if domain:
+        title_parts.append(f"({domain})")
+    if cost.escalated:
+        title_parts.append("🔺 ESCALATED")
+        title_color = "red"
+    elif researched:
+        title_parts.append("🔍 RESEARCHED")
+        title_color = "blue"
+    elif not consensus and agreement_score is not None:
+        title_parts.append(f"⚠️ SPLIT ({agreement_score:.0%})")
+        title_color = "yellow"
+    else:
+        title_color = "green"
+
+    title = " ".join(title_parts)
+
+    # ── Main response panel ────────────────────────────────────────────
+    con.print(Panel(
+        Markdown(result["response"]),
+        title=f"[bold {title_color}]{title}[/bold {title_color}]",
+        border_style=title_color,
+    ))
+
+    # ── Confidence panel (only for adaptive with agreement data) ───────
+    if agreement_score is not None:
+        label, label_color = _confidence_label(agreement_score, consensus, researched)
+        bar = _confidence_bar(agreement_score)
+
+        model_count = len(result.get("model_names", []))
+        aligned = int(agreement_score * model_count) if model_count > 0 else 0
+        aligned = max(aligned, 1) if model_count > 0 else 0
+
+        conf_parts = []
+        conf_parts.append(f"  [bold]Agreement:[/bold] {agreement_score:.0%} ({aligned}/{model_count} models aligned)")
+        if domain:
+            conf_parts.append(f"  [bold]Domain:[/bold] {domain} · Threshold: {threshold:.0%}")
+        conf_parts.append(f"  [{label_color}]{bar}[/{label_color}] {label}")
+        if researched:
+            conf_parts.append("  [blue]🔍 Models initially disagreed → web search → re-asked with docs[/blue]")
+
+        con.print("\n".join(conf_parts))
+        con.print()
+
+    # ── Escalation reason ──────────────────────────────────────────────
+    if result.get("escalation_reason"):
+        con.print(f"[yellow]⚠  Escalated: {result['escalation_reason']}[/yellow]")
+
+    # ── Model status line ──────────────────────────────────────────────
+    if result.get("model_status"):
+        _show_model_status(result["model_status"])
+
+    # ── Rich footer ────────────────────────────────────────────────────
+    footer_parts = [f"${cost.estimated_cost_usd:.4f}"]
+    footer_parts.append(f"{cost.total_input_tokens + cost.total_output_tokens:,} tokens")
+    footer_parts.append(f"⏱  {result['latency_ms']}ms")
+
+    if result.get("ranking"):
+        best_idx = result["ranking"].get("best_index", 0)
+        names = result.get("model_names", [])
+        if best_idx < len(names):
+            footer_parts.append(f"👑 Best: {names[best_idx]}")
+
+    if result.get("layers", 1) > 1:
+        footer_parts.append(f"📐 {result['layers']} layers")
+
+    warning = result.get("warning", "")
+    if warning:
+        footer_parts.append(f"⚠️ {warning}")
+
+    con.print(f"[dim]  {'  ·  '.join(footer_parts)}[/dim]")
+
+
 @app.command()
 def ask(
     query: str = typer.Argument(..., help="The question to send to the model ensemble"),
@@ -193,46 +297,8 @@ def ask(
             ))
         console.print()
 
-    # Title
-    cost = result["cost"]
-    classification = result.get("classification", "")
-    agreement_score = result.get("agreement_score", None)
-    consensus = result.get("consensus", True)
-
-    researched = result.get("researched", False)
-
-    if cost.escalated:
-        title_color = "red"
-        title = f"[bold red]{cost.tier} 🔺 ESCALATED[/bold red]"
-    elif researched:
-        title_color = "blue"
-        title = f"[bold blue]{cost.tier} 🔍 RESEARCHED[/bold blue]"
-    elif not consensus:
-        title_color = "yellow"
-        title = f"[bold yellow]{cost.tier} ⚠️  DISAGREEMENT (similarity: {agreement_score:.0%})[/bold yellow]"
-    else:
-        title_color = "green"
-        title = f"[bold green]{cost.tier}[/bold green]"
-        if classification:
-            title += f" [dim]({classification})[/dim]"
-
-    console.print(Panel(Markdown(result["response"]), title=title, border_style=title_color))
-
-    # Model status
-    if result.get("model_status"):
-        _show_model_status(result["model_status"])
-
-    # Escalation reason
-    if result.get("escalation_reason"):
-        console.print(f"[yellow]⚠  Escalated: {result['escalation_reason']}[/yellow]")
-
-    # Cost summary (now with real costs)
-    warning = result.get("warning", "")
-    meta = cost.summary()
-    if warning:
-        meta += f" | ⚠️  {warning}"
-    meta += f" | ⏱  {result['latency_ms']}ms"
-    console.print(f"[dim]{meta}[/dim]")
+    # ── Rich output display ────────────────────────────────────────────
+    _display_rich_result(result, console)
 
 
 @app.command()
@@ -387,6 +453,8 @@ def debate(
 
     converged = result.get("converged_at")
     style_label = result.get("debate_style", "peer")
+    total_rounds = len(result.get("rounds", [])) - 1  # subtract round 0
+
     if converged:
         title = f"[bold green]Debate — converged at round {converged}/{rounds}[/bold green]"
         border = "green"
@@ -399,13 +467,22 @@ def debate(
 
     console.print(Panel(Markdown(result["response"]), title=title, border_style=border))
 
+    # Model status
     if result.get("model_status"):
         _show_model_status(result["model_status"])
 
-    meta = result['cost'].summary() + f" | ⏱  {result['latency_ms']}ms"
+    # Debate footer
+    cost = result["cost"]
+    footer_parts = [f"${cost.estimated_cost_usd:.4f}"]
+    footer_parts.append(f"{cost.total_input_tokens + cost.total_output_tokens:,} tokens")
+    footer_parts.append(f"⏱  {result['latency_ms']}ms")
     if converged:
-        meta += f" | 🎯 Converged at round {converged}"
-    console.print(f"[dim]{meta}[/dim]")
+        footer_parts.append(f"🎯 Converged at round {converged}/{rounds}")
+    else:
+        footer_parts.append(f"📊 {total_rounds} rounds completed")
+    if style_label == "adversarial":
+        footer_parts.append("⚔️ Adversarial")
+    console.print(f"[dim]  {'  ·  '.join(footer_parts)}[/dim]")
 
 
 @app.command()
