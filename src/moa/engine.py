@@ -20,7 +20,8 @@ from .models import (
 from .prompts import (
     MOA_AGGREGATOR_SYSTEM, DEBATE_ROUND_SYSTEM, DEBATE_JUDGE_SYSTEM,
     CODE_REVIEW_AGGREGATOR, format_proposals, format_review_findings,
-    CLASSIFY_QUERY_PROMPT, DISAGREEMENT_SYNTHESIS_PROMPT, CONSENSUS_AGGREGATOR_PROMPT, PAIRWISE_RANK_PROMPT,
+    CLASSIFY_QUERY_PROMPT, DISAGREEMENT_SYNTHESIS_PROMPT, CONSENSUS_AGGREGATOR_PROMPT,
+    PAIRWISE_RANK_PROMPT, REVIEWER_DISCOURSE_SYSTEM,
     DEBATE_CHALLENGE_SYSTEM, DEBATE_REVISION_WITH_CHALLENGES_SYSTEM,
     DEBATE_ANGEL_SYSTEM, DEBATE_DEVIL_SYSTEM, DEBATE_ADVERSARIAL_JUDGE_SYSTEM,
 )
@@ -777,10 +778,14 @@ async def run_deep_research(query: str) -> Dict[str, Any]:
 async def run_expert_review(
     diff: str,
     context: str = "",
+    discourse: bool = False,
+    roles: List = None,
 ) -> Dict[str, Any]:
-    """Run Expert Panel code review with 4 specialized reviewers.
+    """Run Expert Panel code review with specialized reviewers.
 
-    Security + Architecture + Performance + Correctness → Synthesizer
+    Default: Security + Architecture + Performance + Correctness → Synthesizer
+    With --personas: Fowler + Beck + Hickey + Metz → Synthesizer
+    With --discourse: adds a second round where reviewers react to each other
     """
     from .config import MAX_DIFF_CHARS
 
@@ -797,8 +802,9 @@ async def run_expert_review(
 
     review_prompt = f"Review this code change:\n\n{context}\n\n```diff\n{diff}\n```"
 
+    review_roles = roles if roles is not None else REVIEWER_ROLES
     available_roles = []
-    for role in REVIEWER_ROLES:
+    for role in review_roles:
         if role.model.available:
             available_roles.append((role, role.model))
         elif role.fallback.available:
@@ -832,6 +838,39 @@ async def run_expert_review(
 
     if not findings:
         raise RuntimeError("All reviewers failed.")
+
+    # ── Discourse round (optional) ─────────────────────────────────────────
+    if discourse and len(findings) >= 2:
+        discourse_tasks = []
+        discourse_roles_used = []
+
+        for i, finding in enumerate(findings):
+            other_findings_text = "\n\n---\n\n".join(
+                f"**{f['role']}:**\n{f['content']}"
+                for j, f in enumerate(findings) if j != i
+            )
+            discourse_prompt = REVIEWER_DISCOURSE_SYSTEM.format(
+                role=finding["role"],
+                own_findings=finding["content"],
+                other_findings=other_findings_text,
+            )
+            # Use same model that produced original finding
+            role, model = available_roles[i]
+            discourse_tasks.append(
+                call_model(model, [
+                    {"role": "system", "content": discourse_prompt},
+                    {"role": "user", "content": f"React to other reviewers' findings on:\n```diff\n{diff[:2000]}\n```"},
+                ])
+            )
+            discourse_roles_used.append((role, model))
+
+        discourse_results = await asyncio.gather(*discourse_tasks)
+        for (role, model), result in zip(discourse_roles_used, discourse_results):
+            short = model.name.split("/")[-1] if "/" in model.name else model.name
+            if result:
+                findings.append({"role": f"{role.name} (discourse)", "content": result["content"]})
+                _update_cost(cost, result)
+                model_status[f"{role.name}:disc"] = f"✅ {result['latency_s']}s ({short})"
 
     # ── Synthesize ─────────────────────────────────────────────────────────
     aggregator = get_aggregator(prefer_premium=True)

@@ -149,6 +149,26 @@ Reviewer findings:
 {findings}"""
 
 
+# ── Code Review: Reviewer discourse (from Open Code Review) ──────────────────
+
+REVIEWER_DISCOURSE_SYSTEM = """You are the {role} reviewer. You already reviewed this code. \
+Now other specialists have shared their findings.
+
+React to their findings using ONLY these structured moves:
+- AGREE: "I confirm [finding] — here's additional evidence: ..."
+- CHALLENGE: "I disagree with [finding] because ..."
+- CONNECT: "[My finding X] relates to [their finding Y] because ..."
+- SURFACE: "Reading their findings, I now notice: ..."
+
+Only use moves that add value. Don't react to every finding. Be specific.
+
+Your original findings:
+{own_findings}
+
+Other reviewers' findings:
+{other_findings}"""
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def format_proposals(proposals: list, model_names: list = None) -> str:

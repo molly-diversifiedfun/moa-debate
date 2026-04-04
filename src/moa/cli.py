@@ -216,8 +216,14 @@ def review(
     path: str = typer.Argument(None, help="Path to diff file, or omit for --staged"),
     staged: bool = typer.Option(False, "--staged", "-s", help="Review git staged changes"),
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw text"),
+    discourse: bool = typer.Option(False, "--discourse", "-d", help="Enable reviewer discourse round"),
+    personas: bool = typer.Option(False, "--personas", "-P", help="Use famous engineer personas"),
 ):
-    """Run Expert Panel code review (Security + Architecture + Performance + Correctness)."""
+    """Run Expert Panel code review (Security + Architecture + Performance + Correctness).
+
+    Use --personas for Fowler/Beck/Hickey/Metz review style.
+    Use --discourse for reviewers to react to each other's findings.
+    """
     from .config import MAX_DIFF_LINES
 
     if staged:
@@ -251,13 +257,17 @@ def review(
             f"Large diffs will be truncated and may miss issues.[/yellow]"
         )
 
+    from .models import PERSONA_ROLES
+    review_roles = PERSONA_ROLES if personas else REVIEWER_ROLES
     available = [(r, r.model if r.model.available else r.fallback)
-                 for r in REVIEWER_ROLES if r.model.available or r.fallback.available]
+                 for r in review_roles if r.model.available or r.fallback.available]
+    label = "Persona Panel" if personas else "Expert Panel"
+    disc_label = " + discourse" if discourse else ""
     with console.status(
-        f"[bold cyan]Running Expert Panel...[/bold cyan] "
+        f"[bold cyan]Running {label}{disc_label}...[/bold cyan] "
         f"{len(available)} reviewers → synthesizer"
     ):
-        result = asyncio.run(run_expert_review(diff))
+        result = asyncio.run(run_expert_review(diff, discourse=discourse, roles=review_roles))
 
     if raw:
         print(result["response"])
