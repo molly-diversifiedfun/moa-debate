@@ -50,6 +50,7 @@ def ask(
     no_cache: bool = typer.Option(False, "--no-cache", help="Bypass response cache"),
     research: str = typer.Option("auto", "--research", "-R", help="Research mode: auto, lite, deep, off"),
     layers: int = typer.Option(1, "--layers", "-L", help="MoA aggregation layers (1-3, default 1)"),
+    persona: str = typer.Option(None, "--persona", help="Persona names (comma-separated) or category: code, product, content, architecture, builder"),
 ):
     """Run a Mixture-of-Agents query across multiple models.
 
@@ -57,6 +58,7 @@ def ask(
     Use --context to auto-inject project structure and key files.
     Use --cascade for legacy flow. Use --tier for manual tier selection.
     Use --research deep for thorough multi-hop web research.
+    Use --persona "DHH,Shreya Doshi" or --persona product for persona-flavored responses.
     """
     # ── Context injection ──────────────────────────────────────────────────
     if context:
@@ -71,6 +73,27 @@ def ask(
             stdin_content = sys.stdin.read().strip()
             if stdin_content:
                 query = f"[PIPED CONTEXT]\n{stdin_content}\n[/PIPED CONTEXT]\n\nQuestion: {query}"
+
+    # ── Persona injection ───────────────────────────────────────────────
+    if persona:
+        from .models import get_personas, PERSONA_CATEGORIES
+        # Check if it's a category name
+        if persona.lower() in PERSONA_CATEGORIES:
+            selected = get_personas(category=persona)
+        else:
+            selected = get_personas(names=persona)
+        if selected and not raw:
+            names = ", ".join(p.name for p in selected)
+            console.print(f"[dim]🎭 Personas: {names}[/dim]")
+        if selected:
+            persona_block = "\n".join(
+                f"- {p.name}: {p.system_prompt}" for p in selected
+            )
+            query = (
+                f"[PERSONA PERSPECTIVES]\n"
+                f"Answer from these specific perspectives:\n{persona_block}\n"
+                f"[/PERSONA PERSPECTIVES]\n\n{query}"
+            )
 
     effective_tier = "cascade" if cascade else ("adaptive" if adaptive else tier)
 
@@ -218,11 +241,13 @@ def review(
     staged: bool = typer.Option(False, "--staged", "-s", help="Review git staged changes"),
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw text"),
     discourse: bool = typer.Option(False, "--discourse", "-d", help="Enable reviewer discourse round"),
-    personas: bool = typer.Option(False, "--personas", "-P", help="Use famous engineer personas"),
+    personas: bool = typer.Option(False, "--personas", "-P", help="Use default code review personas"),
+    persona: str = typer.Option(None, "--persona", help="Persona names or category: code, architecture, product"),
 ):
     """Run Expert Panel code review (Security + Architecture + Performance + Correctness).
 
     Use --personas for Fowler/Beck/Hickey/Metz review style.
+    Use --persona "DHH,Kelsey Hightower" for specific personas.
     Use --discourse for reviewers to react to each other's findings.
     """
     from .config import MAX_DIFF_LINES
@@ -258,11 +283,22 @@ def review(
             f"Large diffs will be truncated and may miss issues.[/yellow]"
         )
 
-    from .models import PERSONA_ROLES
-    review_roles = PERSONA_ROLES if personas else REVIEWER_ROLES
+    from .models import PERSONA_ROLES, get_personas, PERSONA_CATEGORIES
+    if persona:
+        if persona.lower() in PERSONA_CATEGORIES:
+            selected = get_personas(category=persona)
+        else:
+            selected = get_personas(names=persona)
+        review_roles = [p.as_reviewer_role() for p in selected]
+        label = "Persona Panel"
+    elif personas:
+        review_roles = PERSONA_ROLES
+        label = "Persona Panel"
+    else:
+        review_roles = REVIEWER_ROLES
+        label = "Expert Panel"
     available = [(r, r.model if r.model.available else r.fallback)
                  for r in review_roles if r.model.available or r.fallback.available]
-    label = "Persona Panel" if personas else "Expert Panel"
     disc_label = " + discourse" if discourse else ""
     with console.status(
         f"[bold cyan]Running {label}{disc_label}...[/bold cyan] "
@@ -296,13 +332,35 @@ def debate(
     tier: str = typer.Option("pro", "--tier", "-t", help="Model tier"),
     style: str = typer.Option("peer", "--style", "-s", help="Debate style: peer or adversarial"),
     context: str = typer.Option(None, "--context", "-x", help="Path to project/dir/file for auto-context injection"),
+    persona: str = typer.Option(None, "--persona", help="Persona names or category for debate perspectives"),
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw text"),
 ):
     """Run a multi-round debate where models revise based on each other.
 
     Use --style adversarial for angel/devil/judge pattern.
     Use --context to inject project files for architecture debates.
+    Use --persona "DHH,Kelsey Hightower" for persona-flavored debate.
     """
+    # ── Persona injection ─────────────────────────────────────────────────
+    if persona:
+        from .models import get_personas, PERSONA_CATEGORIES
+        if persona.lower() in PERSONA_CATEGORIES:
+            selected = get_personas(category=persona)
+        else:
+            selected = get_personas(names=persona)
+        if selected and not raw:
+            names = ", ".join(p.name for p in selected)
+            console.print(f"[dim]🎭 Personas: {names}[/dim]")
+        if selected:
+            persona_block = "\n".join(
+                f"- {p.name}: {p.system_prompt}" for p in selected
+            )
+            query = (
+                f"[PERSONA PERSPECTIVES]\n"
+                f"Debate from these perspectives:\n{persona_block}\n"
+                f"[/PERSONA PERSPECTIVES]\n\n{query}"
+            )
+
     # ── Context injection ──────────────────────────────────────────────────
     if context:
         ctx = build_context(context)

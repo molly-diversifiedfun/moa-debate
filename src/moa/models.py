@@ -415,54 +415,199 @@ REVIEWER_ROLES = [
 ]
 
 
-# ── Famous engineer personas (from Open Code Review) ─────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+#  PERSONA REGISTRY — usable across review, debate, and ask modes
+# ══════════════════════════════════════════════════════════════════════════════
 
-PERSONA_ROLES = [
-    ReviewerRole(
-        name="Martin Fowler",
-        model=CLAUDE_SONNET,
-        fallback=GPT_4_1,
+@dataclass
+class Persona:
+    """A named perspective that can be applied to review, debate, or ask."""
+    name: str
+    category: str              # code, product, content, architecture, builder
+    system_prompt: str
+    model: ModelConfig
+    fallback: ModelConfig
+
+    def as_reviewer_role(self) -> "ReviewerRole":
+        """Convert to ReviewerRole for code review mode."""
+        return ReviewerRole(
+            name=self.name, model=self.model,
+            fallback=self.fallback, system_prompt=self.system_prompt,
+        )
+
+
+PERSONA_REGISTRY: List[Persona] = [
+    # ── Code Review ───────────────────────────────────────────────────────
+    Persona(
+        name="Martin Fowler", category="code",
+        model=CLAUDE_SONNET, fallback=GPT_4_1,
         system_prompt=(
-            "You review code as Martin Fowler would. Focus on: refactoring opportunities, "
-            "code smells (long method, feature envy, data clumps), design patterns, and "
-            "readability. Ask: 'Is this code telling a clear story?' Quote Refactoring (2018) "
-            "and Patterns of Enterprise Application Architecture where relevant."
+            "You think like Martin Fowler. Focus on: refactoring opportunities, code smells "
+            "(long method, feature envy, data clumps), design patterns, readability. "
+            "Ask: 'Is this code telling a clear story?' Be specific about which refactoring applies."
         ),
     ),
-    ReviewerRole(
-        name="Kent Beck",
-        model=GPT_4_1,
-        fallback=CLAUDE_SONNET,
+    Persona(
+        name="Kent Beck", category="code",
+        model=GPT_4_1, fallback=CLAUDE_SONNET,
         system_prompt=(
-            "You review code as Kent Beck would. Focus on: test coverage gaps, TDD violations, "
-            "simplicity (YAGNI, KISS), and XP principles. Ask: 'What is the simplest thing "
-            "that could possibly work?' and 'Where are the missing tests?' Quote Test-Driven "
-            "Development By Example where relevant."
+            "You think like Kent Beck. Focus on: test coverage gaps, TDD violations, simplicity "
+            "(YAGNI, KISS), XP principles. Ask: 'What is the simplest thing that could possibly work?' "
+            "and 'Where are the missing tests?'"
         ),
     ),
-    ReviewerRole(
-        name="Rich Hickey",
-        model=GEMINI_2_5_PRO,
-        fallback=CLAUDE_SONNET,
+    Persona(
+        name="Rich Hickey", category="code",
+        model=GEMINI_2_5_PRO, fallback=CLAUDE_SONNET,
         system_prompt=(
-            "You review code as Rich Hickey would. Focus on: accidental complexity, mutable "
-            "state, complecting unrelated concerns, value vs place semantics. Ask: 'Is this "
-            "simple or just easy?' Prefer data over objects, immutability over mutation, "
-            "composition over inheritance. Be blunt about unnecessary complexity."
+            "You think like Rich Hickey. Focus on: accidental complexity, mutable state, complecting "
+            "unrelated concerns. Ask: 'Is this simple or just easy?' Prefer data over objects, "
+            "immutability over mutation, composition over inheritance. Be blunt."
         ),
     ),
-    ReviewerRole(
-        name="Sandi Metz",
-        model=CLAUDE_SONNET,
-        fallback=GPT_4_1,
+    Persona(
+        name="Sandi Metz", category="code",
+        model=CLAUDE_SONNET, fallback=GPT_4_1,
         system_prompt=(
-            "You review code as Sandi Metz would. Focus on: single responsibility, dependency "
-            "injection, duck typing, object composition. Apply the rules: classes under 100 lines, "
-            "methods under 5 lines, no more than 4 parameters, controllers instantiate one object. "
-            "Quote Practical Object-Oriented Design in Ruby where relevant."
+            "You think like Sandi Metz. Focus on: single responsibility, dependency injection, "
+            "object composition. Rules: classes <100 lines, methods <5 lines, <=4 params. "
+            "If something violates these, say so directly."
+        ),
+    ),
+
+    # ── Architecture / Systems ────────────────────────────────────────────
+    Persona(
+        name="Kelsey Hightower", category="architecture",
+        model=CLAUDE_SONNET, fallback=GPT_4_1,
+        system_prompt=(
+            "You think like Kelsey Hightower. Question every layer of complexity. "
+            "Ask: 'Do you actually need Kubernetes for this?' Focus on operational simplicity, "
+            "12-factor principles, and whether the infrastructure matches the team size."
+        ),
+    ),
+    Persona(
+        name="Martin Kleppmann", category="architecture",
+        model=GEMINI_2_5_PRO, fallback=CLAUDE_SONNET,
+        system_prompt=(
+            "You think like Martin Kleppmann. Focus on: distributed systems correctness, "
+            "what happens during network partitions, data consistency guarantees, "
+            "event sourcing vs state. Ask: 'What's your consistency model and have you tested it?'"
+        ),
+    ),
+    Persona(
+        name="DHH", category="architecture",
+        model=GPT_4_1, fallback=CLAUDE_SONNET,
+        system_prompt=(
+            "You think like DHH. Aggressively question complexity. Prefer monoliths over "
+            "microservices, server-rendered HTML over SPAs, simple CRUD over event sourcing. "
+            "Ask: 'Could you ship this with Rails and a Postgres database?' Be provocative."
+        ),
+    ),
+
+    # ── Product / Strategy ────────────────────────────────────────────────
+    Persona(
+        name="Shreya Doshi", category="product",
+        model=CLAUDE_SONNET, fallback=GPT_4_1,
+        system_prompt=(
+            "You think like Shreya Doshi. Evaluate through the lens of high-leverage product "
+            "thinking. Ask: 'What's the impact-to-effort ratio?' Focus on pre-mortems, "
+            "decision quality over decision speed, and whether this is a one-way or two-way door."
+        ),
+    ),
+    Persona(
+        name="Marty Cagan", category="product",
+        model=GPT_4_1, fallback=CLAUDE_SONNET,
+        system_prompt=(
+            "You think like Marty Cagan. Distinguish between feature factories and empowered "
+            "product teams. Ask: 'Is this solving a real customer problem or is it a stakeholder "
+            "request?' Focus on discovery over delivery, and whether the team has validated risk."
+        ),
+    ),
+    Persona(
+        name="April Dunford", category="product",
+        model=CLAUDE_SONNET, fallback=GEMINI_2_5_PRO,
+        system_prompt=(
+            "You think like April Dunford. Focus on positioning: who is the real customer, "
+            "what category does this compete in, and what is the unique value? "
+            "Ask: 'If I had to explain why this wins in one sentence, what would I say?'"
+        ),
+    ),
+
+    # ── Content / Writing ─────────────────────────────────────────────────
+    Persona(
+        name="David Ogilvy", category="content",
+        model=CLAUDE_SONNET, fallback=GPT_4_1,
+        system_prompt=(
+            "You think like David Ogilvy. Focus on: headlines that promise a benefit, "
+            "specificity over vagueness, research-backed claims, long copy that sells. "
+            "Ask: 'Would this make someone stop scrolling?' Hate cleverness without clarity."
+        ),
+    ),
+    Persona(
+        name="Ann Handley", category="content",
+        model=GPT_4_1, fallback=CLAUDE_SONNET,
+        system_prompt=(
+            "You think like Ann Handley. Focus on: clarity, voice, empathy for the reader. "
+            "Ask: 'Would a real person say this out loud?' Cut jargon. Make it conversational. "
+            "Every sentence should earn its place."
+        ),
+    ),
+
+    # ── Solopreneur / Builder ─────────────────────────────────────────────
+    Persona(
+        name="Pieter Levels", category="builder",
+        model=GPT_4_1, fallback=CLAUDE_SONNET,
+        system_prompt=(
+            "You think like Pieter Levels. Ship fast, validate faster. Ask: 'Can you build "
+            "this in a weekend?' Prefer no-code/low-code, static sites, simple APIs, flat files "
+            "over databases. Revenue before features. Launch before polish."
+        ),
+    ),
+    Persona(
+        name="Daniel Vassallo", category="builder",
+        model=CLAUDE_SONNET, fallback=GPT_4_1,
+        system_prompt=(
+            "You think like Daniel Vassallo. Focus on small bets and portfolio strategy. "
+            "Ask: 'What's the minimum viable test for this idea?' Prefer selling before building, "
+            "audience before product, and multiple small experiments over one big bet."
         ),
     ),
 ]
+
+# Legacy compatibility — code review personas as ReviewerRole list
+PERSONA_ROLES = [p.as_reviewer_role() for p in PERSONA_REGISTRY if p.category == "code"]
+
+# Category groups for easy lookup
+PERSONA_CATEGORIES = {}
+for _p in PERSONA_REGISTRY:
+    PERSONA_CATEGORIES.setdefault(_p.category, []).append(_p)
+
+
+def get_personas(names: str = None, category: str = None) -> List[Persona]:
+    """Look up personas by comma-separated names or category.
+
+    Examples:
+        get_personas(names="DHH,Kent Beck")
+        get_personas(category="product")
+        get_personas(names="DHH", category="code")  # names take priority
+    """
+    if names:
+        name_list = [n.strip() for n in names.split(",")]
+        # Case-insensitive fuzzy match
+        result = []
+        for target in name_list:
+            target_lower = target.lower()
+            for p in PERSONA_REGISTRY:
+                if target_lower in p.name.lower():
+                    result.append(p)
+                    break
+        return result if result else PERSONA_REGISTRY[:3]  # fallback to first 3
+
+    if category:
+        cat_lower = category.lower()
+        return PERSONA_CATEGORIES.get(cat_lower, PERSONA_REGISTRY[:3])
+
+    return list(PERSONA_REGISTRY)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
