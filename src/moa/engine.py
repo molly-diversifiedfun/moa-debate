@@ -721,6 +721,18 @@ async def run_adaptive(query: str, research_mode: str = "auto") -> Dict[str, Any
     # ── Step 3d: Pairwise ranking (for STANDARD/COMPLEX) ─────────────────
     ranking = await pairwise_rank(proposals, model_names)
 
+    # ── Step 3e: Session context for consistency ────────────────────────────
+    session_ctx = get_session_context()
+    session_note = ""
+    if session_ctx:
+        session_note = (
+            "\n\n[SESSION CONTEXT — previous answers this session]\n"
+            f"{session_ctx}\n"
+            "[/SESSION CONTEXT]\n"
+            "If your answer contradicts a previous answer in this session, "
+            "explicitly acknowledge the contradiction and explain why."
+        )
+
     # ── Step 4: Synthesize based on agreement ─────────────────────────────
     synthesizer = tier.synthesizer
     if synthesizer and not synthesizer.available:
@@ -735,7 +747,7 @@ async def run_adaptive(query: str, research_mode: str = "auto") -> Dict[str, Any
             )
             synth_result = await call_model(
                 synthesizer,
-                [{"role": "system", "content": synth_prompt}, {"role": "user", "content": query}],
+                [{"role": "system", "content": synth_prompt + session_note}, {"role": "user", "content": query}],
                 temperature=0.1,
                 timeout=AGGREGATOR_TIMEOUT_SECONDS,
             )
@@ -789,7 +801,7 @@ async def run_adaptive(query: str, research_mode: str = "auto") -> Dict[str, Any
             )
             synth_result = await call_model(
                 synthesizer,
-                [{"role": "system", "content": synth_prompt}, {"role": "user", "content": query}],
+                [{"role": "system", "content": synth_prompt + session_note}, {"role": "user", "content": query}],
                 temperature=0.2,
                 timeout=AGGREGATOR_TIMEOUT_SECONDS,
             )

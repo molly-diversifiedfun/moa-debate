@@ -1,9 +1,14 @@
 """CLI interface for the multi-model AI debate system."""
 
 import asyncio
+import logging
 import subprocess
 import sys
 from pathlib import Path
+
+# Suppress LiteLLM's noisy stderr ("Give Feedback", "Provider List" messages)
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+logging.getLogger("litellm").setLevel(logging.WARNING)
 
 import typer
 from rich.console import Console
@@ -11,6 +16,9 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 from dotenv import load_dotenv
+
+import litellm
+litellm.suppress_debug_info = True
 
 from .config import MOA_HOME, GLOBAL_ENV, ensure_moa_home
 from .engine import run_moa, run_expert_review, run_debate, run_cascade, run_adaptive, run_deep_research
