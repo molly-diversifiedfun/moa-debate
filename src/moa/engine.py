@@ -21,7 +21,7 @@ from .prompts import (
     MOA_AGGREGATOR_SYSTEM, DEBATE_ROUND_SYSTEM, DEBATE_JUDGE_SYSTEM,
     CODE_REVIEW_AGGREGATOR, format_proposals, format_review_findings,
     CLASSIFY_QUERY_PROMPT, DISAGREEMENT_SYNTHESIS_PROMPT, CONSENSUS_AGGREGATOR_PROMPT,
-    PAIRWISE_RANK_PROMPT, REVIEWER_DISCOURSE_SYSTEM,
+    PAIRWISE_RANK_PROMPT, REVIEWER_DISCOURSE_SYSTEM, MOA_VERIFY_SYSTEM,
     DEBATE_CHALLENGE_SYSTEM, DEBATE_REVISION_WITH_CHALLENGES_SYSTEM,
     DEBATE_ANGEL_SYSTEM, DEBATE_DEVIL_SYSTEM, DEBATE_ADVERSARIAL_JUDGE_SYSTEM,
 )
@@ -139,11 +139,13 @@ def _update_cost(cost: QueryCost, result: Dict, model: ModelConfig = None, is_ag
 async def run_moa(
     query: str,
     tier_name: str = "lite",
+    layers: int = 1,
 ) -> Dict[str, Any]:
-    """Run a 2-layer Mixture-of-Agents query.
+    """Run a multi-layer Mixture-of-Agents query.
 
     Layer 1: Parallel proposers generate independent responses.
-    Layer 2: Aggregator synthesizes proposals into one high-quality response.
+    Aggregation: Aggregator synthesizes proposals into one high-quality response.
+    Layer 2+ (optional): Proposers verify synthesis, re-aggregate.
     """
     _check_budget_or_raise()
 
@@ -227,16 +229,61 @@ async def run_moa(
     else:
         model_status[f"→{agg_short}"] = "❌ failed"
 
+    response = agg_result["content"] if agg_result else proposals[0]
+
+    # ── Additional layers: proposers verify synthesis ─────────────────────
+    for layer_num in range(2, layers + 1):
+        verify_prompt = MOA_VERIFY_SYSTEM.format(
+            synthesis=response,
+            proposals=format_proposals(proposals, model_names),
+        )
+        verify_tasks = [
+            call_model(m, [
+                {"role": "system", "content": verify_prompt},
+                {"role": "user", "content": query},
+            ])
+            for m in available
+        ]
+        verify_results = await asyncio.gather(*verify_tasks)
+
+        verify_proposals = []
+        verify_names = []
+        for model, r in zip(available, verify_results):
+            short = model.name.split("/")[-1] if "/" in model.name else model.name
+            if r:
+                verify_proposals.append(r["content"])
+                verify_names.append(short)
+                _update_cost(cost, r)
+                model_status[f"{short}:L{layer_num}"] = f"✅ {r['latency_s']}s"
+
+        if verify_proposals:
+            # Re-aggregate verified proposals
+            verify_agg_prompt = MOA_AGGREGATOR_SYSTEM.format(
+                proposals=format_proposals(verify_proposals, verify_names)
+            )
+            re_agg = await call_model(
+                aggregator,
+                [{"role": "system", "content": verify_agg_prompt}, {"role": "user", "content": query}],
+                temperature=0.1,
+                timeout=AGGREGATOR_TIMEOUT_SECONDS,
+            )
+            if re_agg:
+                response = re_agg["content"]
+                _update_cost(cost, re_agg, is_aggregator=True)
+
+    elapsed = int((time.monotonic() - start) * 1000)
+
     # Record spend
     record_spend(cost.estimated_cost_usd)
 
     return {
-        "response": agg_result["content"] if agg_result else proposals[0],
+        "response": response,
         "proposals": proposals,
         "model_names": model_names,
         "model_status": model_status,
         "cost": cost,
         "latency_ms": elapsed,
+        "layers": layers,
         "warning": None if agg_result else "Aggregator failed — returning first proposal",
     }
 

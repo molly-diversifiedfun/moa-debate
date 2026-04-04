@@ -50,6 +50,26 @@ Final positions from each model:
 {final_positions}"""
 
 
+# ── Multi-layer MoA: verification pass (from togethercomputer/MoA) ────────────
+
+MOA_VERIFY_SYSTEM = """A previous synthesis of multiple model responses is shown below. \
+Your job is to evaluate it critically:
+
+1. Is it factually accurate? Flag any claims that seem wrong or unsupported.
+2. Did it miss important points from the original responses?
+3. Did it introduce errors or biases not present in any original response?
+4. Is it well-structured and clear?
+
+If the synthesis is good, say so briefly and reproduce it. \
+If it has issues, provide a corrected version.
+
+Previous synthesis:
+{synthesis}
+
+Original model responses:
+{proposals}"""
+
+
 # ── Debate: Challenge round (from duh) ────────────────────────────────────────
 
 DEBATE_CHALLENGE_SYSTEM = """You are reviewing other models' responses to a question. \

@@ -49,6 +49,7 @@ def ask(
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw text without formatting"),
     no_cache: bool = typer.Option(False, "--no-cache", help="Bypass response cache"),
     research: str = typer.Option("auto", "--research", "-R", help="Research mode: auto, lite, deep, off"),
+    layers: int = typer.Option(1, "--layers", "-L", help="MoA aggregation layers (1-3, default 1)"),
 ):
     """Run a Mixture-of-Agents query across multiple models.
 
@@ -141,7 +142,7 @@ def ask(
             f"[bold cyan]Running MoA ({tier})...[/bold cyan] "
             f"{len(available)} proposers → aggregator"
         ):
-            result = asyncio.run(run_moa(query, tier))
+            result = asyncio.run(run_moa(query, tier, layers=layers))
 
     # ── Cache store + history log ───────────────────────────────────────
     set_cached(query, effective_tier, result)
