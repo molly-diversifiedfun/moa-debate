@@ -21,6 +21,8 @@ from .prompts import (
     MOA_AGGREGATOR_SYSTEM, DEBATE_ROUND_SYSTEM, DEBATE_JUDGE_SYSTEM,
     CODE_REVIEW_AGGREGATOR, format_proposals, format_review_findings,
     CLASSIFY_QUERY_PROMPT, DISAGREEMENT_SYNTHESIS_PROMPT, CONSENSUS_AGGREGATOR_PROMPT,
+    DEBATE_CHALLENGE_SYSTEM, DEBATE_REVISION_WITH_CHALLENGES_SYSTEM,
+    DEBATE_ANGEL_SYSTEM, DEBATE_DEVIL_SYSTEM, DEBATE_ADVERSARIAL_JUDGE_SYSTEM,
 )
 
 
@@ -792,13 +794,24 @@ async def run_debate(
     query: str,
     rounds: int = 2,
     tier_name: str = "pro",
+    debate_style: str = "peer",
 ) -> Dict[str, Any]:
     """Run a multi-round debate where models revise based on each other.
 
-    Round 0: Independent responses
-    Rounds 1-N: Each model sees others' responses and revises
-    Final: Judge synthesizes final positions
+    Peer style (default):
+      Round 0: Independent responses
+      Challenge: Models find flaws in others' responses
+      Rounds 1-N: Models revise, addressing challenges. Early exit if convergence >0.7.
+      Final: Judge synthesizes
+
+    Adversarial style (--style adversarial):
+      Round 0: Angel argues FOR, Devil argues AGAINST
+      Rounds 1-N: Each sees the other's position and revises
+      Final: Judge synthesizes both perspectives
     """
+    if debate_style == "adversarial":
+        return await _run_adversarial_debate(query, rounds, tier_name)
+
     tier = TIERS.get(tier_name)
     if not tier:
         raise ValueError(f"Unknown tier: {tier_name}")
@@ -811,6 +824,7 @@ async def run_debate(
     start = time.monotonic()
     all_rounds = []
     model_status = {}
+    converged_at = None
 
     # ── Round 0: Independent ───────────────────────────────────────────────
     tasks = [call_model(m, [{"role": "user", "content": query}]) for m in available]
@@ -831,7 +845,39 @@ async def run_debate(
     if len(current_positions) < 2:
         raise RuntimeError("Less than 2 models responded. Cannot debate.")
 
-    # ── Debate rounds ──────────────────────────────────────────────────────
+    # ── Challenge round: find flaws before revision ────────────────────────
+    challenges_by_model = {}
+    challenge_tasks = []
+    challenge_models = []
+
+    for model in available:
+        if model.name not in current_positions:
+            continue
+        others = {k: v for k, v in current_positions.items() if k != model.name}
+        if not others:
+            continue
+
+        other_text = format_proposals(
+            list(others.values()),
+            [k.split("/")[-1] for k in others.keys()]
+        )
+        challenge_tasks.append(
+            call_model(model, [
+                {"role": "system", "content": DEBATE_CHALLENGE_SYSTEM.format(other_responses=other_text)},
+                {"role": "user", "content": query},
+            ])
+        )
+        challenge_models.append(model)
+
+    challenge_results = await asyncio.gather(*challenge_tasks)
+    for model, result in zip(challenge_models, challenge_results):
+        short = model.name.split("/")[-1] if "/" in model.name else model.name
+        if result:
+            challenges_by_model[model.name] = result["content"]
+            _update_cost(cost, result)
+            model_status[short] = f"✅ CH:{result['latency_s']}s"
+
+    # ── Debate rounds with convergence check ───────────────────────────────
     for round_num in range(1, rounds + 1):
         revision_tasks = []
         revision_models = []
@@ -847,7 +893,26 @@ async def run_debate(
                 list(others.values()),
                 [k.split("/")[-1] for k in others.keys()]
             )
-            system = DEBATE_ROUND_SYSTEM.format(other_responses=other_text)
+
+            # First revision round: include challenges
+            if round_num == 1 and challenges_by_model:
+                # Gather challenges OF this model (from others)
+                relevant_challenges = {
+                    k: v for k, v in challenges_by_model.items() if k != model.name
+                }
+                if relevant_challenges:
+                    challenge_text = format_proposals(
+                        list(relevant_challenges.values()),
+                        [k.split("/")[-1] for k in relevant_challenges.keys()]
+                    )
+                    system = DEBATE_REVISION_WITH_CHALLENGES_SYSTEM.format(
+                        challenges=challenge_text,
+                        other_responses=other_text,
+                    )
+                else:
+                    system = DEBATE_ROUND_SYSTEM.format(other_responses=other_text)
+            else:
+                system = DEBATE_ROUND_SYSTEM.format(other_responses=other_text)
 
             revision_tasks.append(
                 call_model(model, [
@@ -867,6 +932,12 @@ async def run_debate(
 
         all_rounds.append(dict(current_positions))
 
+        # Convergence check: early exit if models agree
+        agreement = compute_agreement(list(current_positions.values()))
+        if agreement["score"] > 0.7:
+            converged_at = round_num
+            break
+
     # ── Final judgment ─────────────────────────────────────────────────────
     aggregator = get_aggregator(prefer_premium=True)
     elapsed = int((time.monotonic() - start) * 1000)
@@ -876,6 +947,7 @@ async def run_debate(
             "response": list(current_positions.values())[0],
             "rounds": all_rounds, "model_status": model_status,
             "cost": cost, "latency_ms": elapsed,
+            "converged_at": converged_at,
         }
 
     final_text = format_proposals(
@@ -902,4 +974,129 @@ async def run_debate(
         "model_status": model_status,
         "cost": cost,
         "latency_ms": elapsed,
+        "converged_at": converged_at,
+    }
+
+
+async def _run_adversarial_debate(
+    query: str,
+    rounds: int = 2,
+    tier_name: str = "pro",
+) -> Dict[str, Any]:
+    """Angel/Devil/Judge debate: one model argues FOR, one AGAINST, judge synthesizes."""
+    tier = TIERS.get(tier_name)
+    if not tier:
+        raise ValueError(f"Unknown tier: {tier_name}")
+
+    available = tier.available_proposers
+    if len(available) < 2:
+        raise RuntimeError("Adversarial debate requires at least 2 available models.")
+
+    angel_model = available[0]
+    devil_model = available[1]
+    cost = QueryCost(tier=f"adversarial-{tier_name}")
+    start = time.monotonic()
+    all_rounds = []
+    model_status = {}
+    converged_at = None
+
+    angel_short = angel_model.name.split("/")[-1] if "/" in angel_model.name else angel_model.name
+    devil_short = devil_model.name.split("/")[-1] if "/" in devil_model.name else devil_model.name
+
+    # ── Round 0: Independent positions ─────────────────────────────────────
+    angel_task = call_model(angel_model, [
+        {"role": "system", "content": DEBATE_ANGEL_SYSTEM.format(previous_round="This is your opening argument.")},
+        {"role": "user", "content": query},
+    ])
+    devil_task = call_model(devil_model, [
+        {"role": "system", "content": DEBATE_DEVIL_SYSTEM.format(previous_round="This is your opening argument.")},
+        {"role": "user", "content": query},
+    ])
+
+    angel_r, devil_r = await asyncio.gather(angel_task, devil_task)
+
+    angel_pos = angel_r["content"] if angel_r else ""
+    devil_pos = devil_r["content"] if devil_r else ""
+
+    if angel_r:
+        _update_cost(cost, angel_r)
+        model_status[f"👼 {angel_short}"] = f"✅ R0:{angel_r['latency_s']}s"
+    if devil_r:
+        _update_cost(cost, devil_r)
+        model_status[f"😈 {devil_short}"] = f"✅ R0:{devil_r['latency_s']}s"
+
+    if not angel_pos or not devil_pos:
+        raise RuntimeError("Both angel and devil must respond. Check API keys.")
+
+    all_rounds.append({"angel": angel_pos, "devil": devil_pos})
+
+    # ── Debate rounds ──────────────────────────────────────────────────────
+    for round_num in range(1, rounds + 1):
+        angel_task = call_model(angel_model, [
+            {"role": "system", "content": DEBATE_ANGEL_SYSTEM.format(
+                previous_round=f"The Critic's argument:\n{devil_pos}"
+            )},
+            {"role": "user", "content": query},
+        ])
+        devil_task = call_model(devil_model, [
+            {"role": "system", "content": DEBATE_DEVIL_SYSTEM.format(
+                previous_round=f"The Advocate's argument:\n{angel_pos}"
+            )},
+            {"role": "user", "content": query},
+        ])
+
+        angel_r, devil_r = await asyncio.gather(angel_task, devil_task)
+
+        if angel_r:
+            angel_pos = angel_r["content"]
+            _update_cost(cost, angel_r)
+            model_status[f"👼 {angel_short}"] = f"✅ R{round_num}:{angel_r['latency_s']}s"
+        if devil_r:
+            devil_pos = devil_r["content"]
+            _update_cost(cost, devil_r)
+            model_status[f"😈 {devil_short}"] = f"✅ R{round_num}:{devil_r['latency_s']}s"
+
+        all_rounds.append({"angel": angel_pos, "devil": devil_pos})
+
+        # Convergence check
+        agreement = compute_agreement([angel_pos, devil_pos])
+        if agreement["score"] > 0.7:
+            converged_at = round_num
+            break
+
+    # ── Final judgment ─────────────────────────────────────────────────────
+    aggregator = get_aggregator(prefer_premium=True)
+    elapsed = int((time.monotonic() - start) * 1000)
+
+    if not aggregator:
+        return {
+            "response": f"**Advocate:**\n{angel_pos}\n\n---\n\n**Critic:**\n{devil_pos}",
+            "rounds": all_rounds, "model_status": model_status,
+            "cost": cost, "latency_ms": elapsed, "converged_at": converged_at,
+        }
+
+    judge_result = await call_model(
+        aggregator,
+        [
+            {"role": "system", "content": DEBATE_ADVERSARIAL_JUDGE_SYSTEM.format(
+                angel_position=angel_pos, devil_position=devil_pos
+            )},
+            {"role": "user", "content": query},
+        ],
+        temperature=0.1,
+        timeout=AGGREGATOR_TIMEOUT_SECONDS,
+    )
+
+    elapsed = int((time.monotonic() - start) * 1000)
+    if judge_result:
+        _update_cost(cost, judge_result, is_aggregator=True)
+
+    return {
+        "response": judge_result["content"] if judge_result else angel_pos,
+        "rounds": all_rounds,
+        "model_status": model_status,
+        "cost": cost,
+        "latency_ms": elapsed,
+        "converged_at": converged_at,
+        "debate_style": "adversarial",
     }

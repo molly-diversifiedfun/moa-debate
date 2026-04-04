@@ -283,11 +283,13 @@ def debate(
     query: str = typer.Argument(..., help="The question to debate"),
     rounds: int = typer.Option(2, "--rounds", "-n", help="Number of debate rounds"),
     tier: str = typer.Option("pro", "--tier", "-t", help="Model tier"),
+    style: str = typer.Option("peer", "--style", "-s", help="Debate style: peer or adversarial"),
     context: str = typer.Option(None, "--context", "-x", help="Path to project/dir/file for auto-context injection"),
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw text"),
 ):
     """Run a multi-round debate where models revise based on each other.
 
+    Use --style adversarial for angel/devil/judge pattern.
     Use --context to inject project files for architecture debates.
     """
     # ── Context injection ──────────────────────────────────────────────────
@@ -302,25 +304,39 @@ def debate(
         console.print("[red]Debate requires at least 2 models with valid API keys.[/red]")
         raise typer.Exit(1)
 
-    with console.status(
-        f"[bold cyan]Debating ({rounds} rounds)...[/bold cyan] {len(available)} models"
-    ):
-        result = asyncio.run(run_debate(query, rounds=rounds, tier_name=tier))
+    status_msg = (
+        f"[bold cyan]Adversarial debate ({rounds} rounds)...[/bold cyan]"
+        if style == "adversarial"
+        else f"[bold cyan]Debating ({rounds} rounds)...[/bold cyan] {len(available)} models"
+    )
+    with console.status(status_msg):
+        result = asyncio.run(run_debate(query, rounds=rounds, tier_name=tier, debate_style=style))
 
     if raw:
         print(result["response"])
         return
 
-    console.print(Panel(
-        Markdown(result["response"]),
-        title=f"[bold yellow]Debate ({rounds} rounds)[/bold yellow]",
-        border_style="yellow",
-    ))
+    converged = result.get("converged_at")
+    style_label = result.get("debate_style", "peer")
+    if converged:
+        title = f"[bold green]Debate — converged at round {converged}/{rounds}[/bold green]"
+        border = "green"
+    elif style_label == "adversarial":
+        title = f"[bold red]Adversarial Debate ({rounds} rounds)[/bold red]"
+        border = "red"
+    else:
+        title = f"[bold yellow]Debate ({rounds} rounds)[/bold yellow]"
+        border = "yellow"
+
+    console.print(Panel(Markdown(result["response"]), title=title, border_style=border))
 
     if result.get("model_status"):
         _show_model_status(result["model_status"])
 
-    console.print(f"[dim]{result['cost'].summary()} | ⏱  {result['latency_ms']}ms[/dim]")
+    meta = result['cost'].summary() + f" | ⏱  {result['latency_ms']}ms"
+    if converged:
+        meta += f" | 🎯 Converged at round {converged}"
+    console.print(f"[dim]{meta}[/dim]")
 
 
 @app.command()

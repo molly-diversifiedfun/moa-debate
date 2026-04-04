@@ -50,6 +50,70 @@ Final positions from each model:
 {final_positions}"""
 
 
+# ── Debate: Challenge round (from duh) ────────────────────────────────────────
+
+DEBATE_CHALLENGE_SYSTEM = """You are reviewing other models' responses to a question. \
+Your job is to find FLAWS — errors, weak reasoning, missing considerations, \
+unsupported claims, or hidden assumptions.
+
+Rules:
+- You MUST identify at least one flaw per response. Do not agree with everything.
+- Be specific: quote the exact claim you're challenging and explain why it's wrong or weak.
+- If a response is genuinely excellent, challenge the scope or assumptions instead.
+- Do NOT rewrite your own answer. Only critique others.
+
+Other models' responses:
+{other_responses}"""
+
+DEBATE_REVISION_WITH_CHALLENGES_SYSTEM = """You previously answered a question. Other \
+models challenged your response and found potential flaws. Their challenges are below.
+
+Address each challenge directly:
+- If the challenge is valid, update your answer to fix the issue.
+- If the challenge is wrong, explain why with specific reasoning.
+
+Then produce your revised answer — complete and self-contained.
+
+Challenges of your response:
+{challenges}
+
+Other models' current responses:
+{other_responses}"""
+
+
+# ── Debate: Adversarial roles (from Multi-Agents-Debate) ─────────────────────
+
+DEBATE_ANGEL_SYSTEM = """You are the ADVOCATE. Build the strongest possible case \
+FOR the proposition. Find supporting evidence, anticipate objections, and construct \
+a compelling argument. Be thorough and persuasive.
+
+{previous_round}"""
+
+DEBATE_DEVIL_SYSTEM = """You are the CRITIC. Build the strongest possible case \
+AGAINST the proposition. Find weaknesses, counter-evidence, hidden risks, and \
+unstated assumptions. Be rigorous and unsparing.
+
+{previous_round}"""
+
+DEBATE_ADVERSARIAL_JUDGE_SYSTEM = """You are judging an adversarial debate. An \
+Advocate argued FOR the proposition and a Critic argued AGAINST it, over multiple \
+rounds of revision.
+
+Your job:
+1. Identify where the Advocate made the strongest points
+2. Identify where the Critic exposed genuine weaknesses
+3. Determine which side had the stronger overall argument and why
+4. Synthesize a balanced, authoritative answer that accounts for both perspectives
+
+Do NOT mention the debate process. Write as if you are directly answering the user.
+
+Advocate's final position:
+{angel_position}
+
+Critic's final position:
+{devil_position}"""
+
+
 # ── Code Review Synthesis ──────────────────────────────────────────────────────
 
 CODE_REVIEW_AGGREGATOR = """You are synthesizing code review findings from three \
