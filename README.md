@@ -32,10 +32,12 @@ Models answer independently in parallel
 Agreement detection with domain-specific thresholds
 (factual questions need 45% agreement, strategic only 20%)
     ↓
-┌─ High agreement → Synthesize best elements → Done
+┌─ High agreement → Synthesize best elements
 └─ Low agreement → Search the web → Re-ask with docs → Synthesize
     ↓
-Output: Answer + Confidence bar + Where models agreed + Where they differed + Attribution
+If STRATEGIC/JUDGMENT → add "It Depends On..." + "How to De-Risk This"
+    ↓
+Output: Answer + Confidence + Agreement/Disagreement + Attribution + Conditionals
 ```
 
 ### What makes this different from just asking Claude?
@@ -43,7 +45,8 @@ Output: Answer + Confidence bar + Where models agreed + Where they differed + At
 1. **Independent verification.** Models from different companies with different training data agree or disagree. Agreement = high confidence. Disagreement = worth investigating.
 2. **Automatic research.** When models disagree on facts, the system searches the web and re-asks with documentation. You get grounded answers, not guesses.
 3. **Transparency.** Every response shows you the agreement score, which model said what, and why the synthesizer chose one model's reasoning over another. You can verify instead of trust.
-4. **Cost-aware routing.** Simple questions hit one cheap model (~$0.001). Complex questions use frontier models (~$0.15). You don't pay $0.25 to answer "What port does HTTP use?"
+4. **Actionable for decisions.** Strategic and judgment questions automatically get "It Depends On..." conditional analysis and "How to De-Risk This" steps. Not just "here's the answer" but "here's what to do next."
+5. **Cost-aware routing.** Simple questions hit one cheap model (~$0.001). Complex questions use frontier models (~$0.15). You don't pay $0.25 to answer "What port does HTTP use?"
 
 ## Quick Start
 
@@ -98,17 +101,23 @@ moa ask "Should I use microservices or a monolith for a 3-person startup?"
 
 Every query is classified by complexity and domain. Simple factual questions hit 1-2 cheap models. Complex strategic questions use 3-4 frontier models with synthesis. You never configure this — it just works.
 
-### Domain-Capped Agreement
+### Domain-Aware Responses
 
-Not all disagreement is equal. On a factual question ("what port does HTTP use?"), models should agree — low agreement means someone's wrong. On a strategic question ("should we use Kubernetes?"), disagreement is expected — it means there's genuine nuance. Domain-specific thresholds determine when to trigger research vs synthesize.
+Every query is classified into a domain. This affects two things: (1) how much model agreement is needed before triggering research, and (2) whether the response includes conditional analysis and de-risking steps.
 
-| Domain | Threshold | Why |
+| Domain | Agreement Threshold | Extra Output |
 |--------|-----------|-----|
-| FACTUAL | 45% | Models should agree on facts |
-| TECHNICAL | 40% | Some implementation opinions OK |
-| CREATIVE | 30% | Diversity is expected |
-| JUDGMENT | 25% | Opinion splits are normal |
-| STRATEGIC | 20% | Complex decisions always diverge |
+| FACTUAL | 45% | Standard answer |
+| TECHNICAL | 40% | Standard answer |
+| CREATIVE | 30% | Standard answer |
+| JUDGMENT | 25% | + "It Depends On..." + "How to De-Risk This" |
+| STRATEGIC | 20% | + "It Depends On..." + "How to De-Risk This" |
+
+For STRATEGIC and JUDGMENT queries, the synthesizer automatically adds:
+- **It Depends On...** — conditional scenarios where the answer changes ("If you've validated with 10+ users, then X. If this is just an idea, then Y.")
+- **How to De-Risk This** — 3-5 specific steps you can do in days, not months
+
+This means `moa ask "Should I take equity or salary?"` automatically gets de-risking analysis — no special flag needed.
 
 ### Research-Augmented Routing
 

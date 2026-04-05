@@ -21,6 +21,8 @@ moa debate --style adversarial "Should we migrate from PostgreSQL to DynamoDB fo
 
 **Why MOA beats asking one model:** Claude might favor one approach, GPT another. When all three independently say "don't do it" — that's a strong signal. When they disagree, the output tells you exactly where and why.
 
+**Bonus:** Architecture decisions are classified as STRATEGIC — so the output automatically includes "It Depends On..." conditional scenarios and "How to De-Risk This" steps. No flag needed.
+
 ---
 
 ## "I wrote code and I want a real review, not a rubber stamp"
@@ -93,6 +95,10 @@ moa ask --persona "Daniel Vassallo" "Should I build an audience or the product f
 
 # Product positioning
 moa ask --persona "April Dunford" "How do I position my tool against Notion, which is free?"
+
+# Strategic questions automatically get conditionals + de-risking
+moa ask "Should I quit my job to build this full-time?"
+# → "It Depends On..." + "How to De-Risk This" included automatically
 ```
 
 ---
@@ -239,16 +245,17 @@ MOA integrates as slash commands — no terminal switching needed.
 
 ## Quick Reference: Picking the Right Mode
 
-| Situation | Command | Cost | Time |
-|-----------|---------|------|------|
-| Quick lookup | `moa ask "..."` | ~$0.001 | 2s |
-| Need reasoning | `moa ask "..."` | ~$0.05 | 10s |
-| Architecture decision | `moa ask --persona architecture "..."` | ~$0.15 | 20s |
-| Niche tooling question | `moa ask "..."` (auto-researches) | ~$0.10 | 15s |
-| Deep research | `moa ask --research deep "..."` | ~$0.25 | 45s |
-| Code review | `moa review --staged` | ~$0.10 | 20s |
-| Persona review | `moa review --staged --persona "name"` | ~$0.05 | 15s |
-| Peer debate | `moa debate "..."` | ~$0.20 | 60s |
-| Adversarial debate | `moa debate --style adversarial "..."` | ~$0.25 | 90s |
-| Plan review | `cat plan.md \| moa ask "Review this"` | ~$0.10 | 15s |
-| High-stakes verification | `moa ask --layers 2 --tier ultra "..."` | ~$0.50 | 40s |
+| Situation | Command | Cost | Time | Extras |
+|-----------|---------|------|------|--------|
+| Quick lookup | `moa ask "..."` | ~$0.001 | 2s | |
+| Need reasoning | `moa ask "..."` | ~$0.05 | 10s | |
+| Architecture decision | `moa ask "..."` | ~$0.15 | 20s | + conditionals, de-risking |
+| "Should I X or Y?" | `moa ask "..."` | ~$0.10 | 15s | + conditionals, de-risking |
+| Niche tooling | `moa ask "..."` (auto-researches) | ~$0.10 | 15s | + sources |
+| Deep research | `moa ask --research deep "..."` | ~$0.25 | 45s | + citations |
+| Code review | `moa review --staged` | ~$0.10 | 20s | |
+| Persona review | `moa review --staged --persona "name"` | ~$0.05 | 15s | |
+| Peer debate | `moa debate "..."` | ~$0.20 | 60s | + conditionals, de-risking |
+| Adversarial debate | `moa debate --style adversarial "..."` | ~$0.25 | 90s | + assumptions, conditionals, de-risking |
+| Plan review | `cat plan.md \| moa debate --style adversarial "..."` | ~$0.25 | 90s | + assumptions, conditionals, de-risking |
+| High-stakes | `moa ask --layers 2 --tier ultra "..."` | ~$0.50 | 40s | + verification pass |
