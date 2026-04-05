@@ -3,7 +3,7 @@
 import asyncio
 import json
 import time
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Callable
 
 from litellm import acompletion
 
@@ -1112,6 +1112,7 @@ async def run_debate(
     rounds: int = 2,
     tier_name: str = "pro",
     debate_style: str = "peer",
+    on_progress: Optional[Callable] = None,
 ) -> Dict[str, Any]:
     """Run a multi-round debate where models revise based on each other.
 
@@ -1126,8 +1127,10 @@ async def run_debate(
       Rounds 1-N: Each sees the other's position and revises
       Final: Judge synthesizes both perspectives
     """
+    _progress = on_progress or (lambda msg: None)
+
     if debate_style == "adversarial":
-        return await _run_adversarial_debate(query, rounds, tier_name)
+        return await _run_adversarial_debate(query, rounds, tier_name, on_progress=_progress)
 
     tier = TIERS.get(tier_name)
     if not tier:
@@ -1144,6 +1147,8 @@ async def run_debate(
     converged_at = None
 
     # ── Round 0: Independent ───────────────────────────────────────────────
+    names = [m.name.split("/")[-1] if "/" in m.name else m.name for m in available]
+    _progress(f"📝 {len(available)} models forming independent opinions... ({', '.join(names)})")
     tasks = [call_model(m, [{"role": "user", "content": query}]) for m in available]
     results = await asyncio.gather(*tasks)
 
@@ -1163,6 +1168,7 @@ async def run_debate(
         raise RuntimeError("Less than 2 models responded. Cannot debate.")
 
     # ── Challenge round: find flaws before revision ────────────────────────
+    _progress("🔍 Challenge round: \"Find something wrong. No, really. We insist.\"")
     challenges_by_model = {}
     challenge_tasks = []
     challenge_models = []
@@ -1195,7 +1201,14 @@ async def run_debate(
             model_status[short] = f"✅ CH:{result['latency_s']}s"
 
     # ── Debate rounds with convergence check ───────────────────────────────
+    round_messages = [
+        "⚔️  Round {n}: Models read the challenges. Egos bruised. Revising...",
+        "🔄 Round {n}: \"Actually, you make a fair point...\" (or not)",
+        "🤔 Round {n}: Models reconsider. Some dig in. Some fold.",
+    ]
     for round_num in range(1, rounds + 1):
+        msg = round_messages[(round_num - 1) % len(round_messages)].format(n=round_num)
+        _progress(msg)
         revision_tasks = []
         revision_models = []
 
@@ -1253,9 +1266,13 @@ async def run_debate(
         agreement = compute_agreement(list(current_positions.values()))
         if agreement["score"] > 0.7:
             converged_at = round_num
+            _progress(f"🤝 Consensus reached at round {round_num}! Agreement: {agreement['score']:.0%}. They actually agree now.")
             break
+        else:
+            _progress(f"   📊 Agreement: {agreement['score']:.0%} — still fighting.")
 
     # ── Final judgment ─────────────────────────────────────────────────────
+    _progress("⚖️  Judge enters the room. Reviewing all arguments...")
     aggregator = get_aggregator(prefer_premium=True)
     elapsed = int((time.monotonic() - start) * 1000)
 
@@ -1299,8 +1316,10 @@ async def _run_adversarial_debate(
     query: str,
     rounds: int = 2,
     tier_name: str = "pro",
+    on_progress: Optional[Callable] = None,
 ) -> Dict[str, Any]:
     """Angel/Devil/Judge debate: one model argues FOR, one AGAINST, judge synthesizes."""
+    _progress = on_progress or (lambda msg: None)
     tier = TIERS.get(tier_name)
     if not tier:
         raise ValueError(f"Unknown tier: {tier_name}")
@@ -1321,6 +1340,16 @@ async def _run_adversarial_debate(
     devil_short = devil_model.name.split("/")[-1] if "/" in devil_model.name else devil_model.name
 
     # ── Round 0: Independent positions ─────────────────────────────────────
+    _progress(f"""
+    ╔══════════════════════════════════════════╗
+    ║          ⚔️  ADVERSARIAL DEBATE  ⚔️       ║
+    ║                                          ║
+    ║   👼 Advocate: {angel_short:<25s}║
+    ║   😈 Critic:   {devil_short:<25s}║
+    ║                                          ║
+    ║   \"Let them fight.\"                      ║
+    ╚══════════════════════════════════════════╝""")
+    _progress("📝 Round 0: Both sides preparing opening arguments...")
     angel_task = call_model(angel_model, [
         {"role": "system", "content": DEBATE_ANGEL_SYSTEM.format(previous_round="This is your opening argument.")},
         {"role": "user", "content": query},
@@ -1382,9 +1411,18 @@ async def _run_adversarial_debate(
         )
 
     all_rounds.append({"angel": angel_pos, "devil": devil_pos})
+    _progress(f"   👼 Advocate: \"{angel_pos[:80]}...\"")
+    _progress(f"   😈 Critic:   \"{devil_pos[:80]}...\"")
 
     # ── Debate rounds ──────────────────────────────────────────────────────
+    adversarial_round_msgs = [
+        "⚔️  Round {n}: They've read each other's arguments. Gloves are off.",
+        "🔥 Round {n}: \"That's your best argument?\" Both sides revising...",
+        "💥 Round {n}: Neither is backing down. Sharpening positions...",
+    ]
     for round_num in range(1, rounds + 1):
+        msg = adversarial_round_msgs[(round_num - 1) % len(adversarial_round_msgs)].format(n=round_num)
+        _progress(msg)
         angel_task = call_model(angel_model, [
             {"role": "system", "content": DEBATE_ANGEL_SYSTEM.format(
                 previous_round=f"The Critic's argument:\n{devil_pos}"
@@ -1415,9 +1453,13 @@ async def _run_adversarial_debate(
         agreement = compute_agreement([angel_pos, devil_pos])
         if agreement["score"] > 0.7:
             converged_at = round_num
+            _progress(f"🤝 They're... agreeing? Agreement: {agreement['score']:.0%}. Debate over.")
             break
+        else:
+            _progress(f"   📊 Agreement: {agreement['score']:.0%} — still at each other's throats.")
 
     # ── Final judgment ─────────────────────────────────────────────────────
+    _progress("⚖️  Judge steps in. Reviewing both sides... who had the better argument?")
     aggregator = get_aggregator(prefer_premium=True)
     elapsed = int((time.monotonic() - start) * 1000)
 

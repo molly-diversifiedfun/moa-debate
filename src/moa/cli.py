@@ -491,13 +491,16 @@ def debate(
         console.print("[red]Debate requires at least 2 models with valid API keys.[/red]")
         raise typer.Exit(1)
 
-    status_msg = (
-        f"[bold cyan]Adversarial debate ({rounds} rounds)...[/bold cyan]"
-        if style == "adversarial"
-        else f"[bold cyan]Debating ({rounds} rounds)...[/bold cyan] {len(available)} models"
-    )
-    with console.status(status_msg):
-        result = _run_async(run_debate(query, rounds=rounds, tier_name=tier, debate_style=style))
+    if raw:
+        with console.status("[bold cyan]Debating...[/bold cyan]"):
+            result = _run_async(run_debate(query, rounds=rounds, tier_name=tier, debate_style=style))
+    else:
+        def _debate_progress(msg):
+            console.print(f"[dim]{msg}[/dim]")
+        result = _run_async(run_debate(
+            query, rounds=rounds, tier_name=tier,
+            debate_style=style, on_progress=_debate_progress,
+        ))
 
     if raw:
         print(result["response"])
