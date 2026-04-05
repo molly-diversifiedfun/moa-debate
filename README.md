@@ -199,6 +199,8 @@ moa ask --persona "DHH,Kent Beck" "..."     # by name (fuzzy matching)
 moa ask --persona product "..."             # all personas in a category
 ```
 
+**Who are these people?** See **[docs/PERSONAS.md](docs/PERSONAS.md)** — each persona's philosophy, what they catch that others miss, key works, and reference links.
+
 ### All Commands
 
 ```bash
