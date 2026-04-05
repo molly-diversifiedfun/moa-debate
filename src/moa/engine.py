@@ -1126,6 +1126,7 @@ async def run_debate(
     tier_name: str = "pro",
     debate_style: str = "peer",
     on_progress: Optional[Callable] = None,
+    template_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run a multi-round debate where models revise based on each other.
 
@@ -1143,7 +1144,7 @@ async def run_debate(
     _progress = on_progress or (lambda msg: None)
 
     if debate_style == "adversarial":
-        return await _run_adversarial_debate(query, rounds, tier_name, on_progress=_progress)
+        return await _run_adversarial_debate(query, rounds, tier_name, on_progress=_progress, template_name=template_name)
 
     tier = TIERS.get(tier_name)
     if not tier:
@@ -1330,9 +1331,24 @@ async def _run_adversarial_debate(
     rounds: int = 2,
     tier_name: str = "pro",
     on_progress: Optional[Callable] = None,
+    template_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Angel/Devil/Judge debate: one model argues FOR, one AGAINST, judge synthesizes."""
     _progress = on_progress or (lambda msg: None)
+
+    # ── Template resolution ───────────────────────────────────────────────
+    from .templates import get_template, detect_template, DecisionTemplate
+    template: Optional[DecisionTemplate] = None
+    if template_name:
+        template = get_template(template_name)
+        if template:
+            _progress(f"📋 Using '{template.name}' template: {template.description}")
+        else:
+            _progress(f"⚠️  Unknown template '{template_name}' — running without template")
+    else:
+        template = detect_template(query)
+        if template:
+            _progress(f"💡 Auto-detected '{template.name}' template — using domain framing")
     tier = TIERS.get(tier_name)
     if not tier:
         raise ValueError(f"Unknown tier: {tier_name}")
@@ -1442,6 +1458,9 @@ async def _run_adversarial_debate(
                 f"arguments against {query}",
                 f"{query} evidence research data",
             ]
+            # Add template-specific research queries
+            if template:
+                search_queries.extend(template.research_queries)
             for provider in providers:
                 for sq in search_queries:
                     try:
@@ -1466,9 +1485,13 @@ async def _run_adversarial_debate(
     except Exception:
         pass  # research is best-effort, debate continues without it
 
-    # Inject research into both sides' prompts so they argue with real data
+    # Inject template context + research into prompts
     angel_system = DEBATE_ANGEL_SYSTEM.format(previous_round="This is your opening argument.")
     devil_system = DEBATE_DEVIL_SYSTEM.format(previous_round="This is your opening argument.")
+    # Template: light context for debaters (what kind of decision, not what to argue)
+    if template:
+        angel_system += f"\n\nDecision context: {template.debater_context}"
+        devil_system += f"\n\nDecision context: {template.debater_context}"
     if research_context:
         cite_instruction = "\n\nCite specific sources from the research when making claims. Reference data, studies, or examples by name."
         angel_system += f"\n\n{research_context}{cite_instruction}"
@@ -1621,6 +1644,9 @@ async def _run_adversarial_debate(
         _devil_rev_sys = DEBATE_DEVIL_SYSTEM.format(
             previous_round=f"The Advocate's argument:\n{angel_pos}"
         )
+        if template:
+            _angel_rev_sys += f"\n\nDecision context: {template.debater_context}"
+            _devil_rev_sys += f"\n\nDecision context: {template.debater_context}"
         if research_context:
             _angel_rev_sys += f"\n\n{research_context}\n\nCite specific sources when making claims."
             _devil_rev_sys += f"\n\n{research_context}\n\nCite specific sources when making claims."
@@ -1699,6 +1725,9 @@ async def _run_adversarial_debate(
     _judge_system = DEBATE_ADVERSARIAL_JUDGE_SYSTEM.format(
         angel_position=angel_pos, devil_position=devil_pos
     )
+    # Template: full structured criteria for the judge
+    if template:
+        _judge_system += f"\n\n{template.judge_addendum}"
     if research_context:
         _judge_system += (
             "\n\nThe following research was provided to both sides. "
@@ -1741,4 +1770,5 @@ async def _run_adversarial_debate(
         "query": query,
         "angel_model": angel_short,
         "devil_model": devil_short,
+        "template": template.name if template else None,
     }

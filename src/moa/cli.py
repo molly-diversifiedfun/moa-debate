@@ -454,6 +454,7 @@ def debate(
     rounds: int = typer.Option(2, "--rounds", "-n", help="Number of debate rounds"),
     tier: str = typer.Option("pro", "--tier", "-t", help="Model tier"),
     style: str = typer.Option("peer", "--style", "-s", help="Debate style: peer or adversarial"),
+    template: str = typer.Option(None, "--template", help="Decision template: hire, build, invest"),
     context: str = typer.Option(None, "--context", "-x", help="Path to project/dir/file for auto-context injection"),
     persona: str = typer.Option(None, "--persona", help="Persona names or category for debate perspectives"),
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw text"),
@@ -498,7 +499,7 @@ def debate(
 
     if raw:
         with console.status("[bold cyan]Debating...[/bold cyan]"):
-            result = _run_async(run_debate(query, rounds=rounds, tier_name=tier, debate_style=style))
+            result = _run_async(run_debate(query, rounds=rounds, tier_name=tier, debate_style=style, template_name=template))
     else:
         import time as _time
         import threading
@@ -649,7 +650,9 @@ def debate(
                 console.print(f"{timestamp}[yellow]{msg}[/yellow]")
             elif "🔄 Still shifting" in msg:
                 console.print(f"{timestamp}[magenta]{msg}[/magenta]")
-            # Research phase
+            # Template and research phase
+            elif "📋" in msg or "💡" in msg:
+                console.print(f"{timestamp}[bold magenta]{msg}[/bold magenta]")
             elif "🔍" in msg or "📚" in msg:
                 console.print(f"{timestamp}[bold blue]{msg}[/bold blue]")
             # Judge entrance
@@ -664,6 +667,7 @@ def debate(
         result = _run_async(run_debate(
             query, rounds=rounds, tier_name=tier,
             debate_style=style, on_progress=_debate_progress,
+            template_name=template,
         ))
         _stop_anim()  # ensure cleanup
 
@@ -711,6 +715,8 @@ def debate(
         footer_parts.append("⚔️ Adversarial")
     if result.get("research_grounded"):
         footer_parts.append("📚 Research-grounded")
+    if result.get("template"):
+        footer_parts.append(f"📋 {result['template']}")
     console.print(f"[dim]  {'  ·  '.join(footer_parts)}[/dim]")
 
     # Write full debate transcript to session file
@@ -799,6 +805,26 @@ def _write_debate_transcript(result: dict, query: str, rounds: int, style: str):
 
     filepath.write_text("\n".join(lines))
     console.print(f"[dim]  📄 Full transcript: {filepath}[/dim]")
+
+
+@app.command()
+def templates():
+    """List available decision templates for debates."""
+    from .templates import list_templates
+
+    table = Table(title="Decision Templates")
+    table.add_column("Template", style="bold cyan")
+    table.add_column("Description")
+    table.add_column("Keywords", style="dim")
+    table.add_column("Usage", style="green")
+
+    for t in list_templates():
+        keywords = ", ".join(t.keywords[:5]) + ("..." if len(t.keywords) > 5 else "")
+        usage = f'moa debate --template {t.name} "..."'
+        table.add_row(t.name, t.description, keywords, usage)
+
+    console.print(table)
+    console.print("\n[dim]Templates auto-detect from query keywords if --template is not specified.[/dim]")
 
 
 @app.command()
