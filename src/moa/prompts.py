@@ -182,12 +182,22 @@ Synthesize into this exact format:
 - **Assumption**: [what]. **If wrong**: [how verdict changes]. **Test it by**: [specific action].
 
 ## Decision Tree
-[A clear if/then flowchart in text. The reader should be able to follow it step by step:]
-1. **First, check**: [specific condition with measurable threshold]
-   - **If yes** → [action + timeline]
-   - **If no** → [different action]
-2. **Then**: [next decision point]
-   - **If [result]** → [proceed/stop/pivot]
+[An ASCII decision tree the reader walks step by step. Use ├──, │, and └── characters.
+Start with the original question. Each branch is a YES/NO question the reader can answer RIGHT NOW.
+Leaf nodes are specific recommendations, not "consider options."]
+
+[question from the debate]
+├── [First differentiating question with measurable threshold]?
+│   ├── YES → [specific recommendation + timeline]
+│   └── NO → [different recommendation]
+├── [Second differentiating question]?
+│   ├── YES → [recommendation]
+│   └── NO → [recommendation]
+└── [Time/resource constraint question]?
+    ├── YES → [fast-path recommendation]
+    └── NO → [thorough-path recommendation]
+
+Rules: max 3 levels deep, every leaf is a concrete action, every question is answerable today.
 
 ## Evidence Quality
 [Rate the overall evidence quality on both sides:]

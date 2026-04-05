@@ -264,3 +264,14 @@ def test_pipeline_stages_are_callable():
     for stage in ADVERSARIAL_PIPELINE:
         assert callable(stage)
         assert asyncio.iscoroutinefunction(stage)
+
+
+# ── Decision tree in judge prompt ─────────────────────────────────────────────
+
+def test_judge_prompt_includes_decision_tree():
+    """Judge system prompt should include ASCII decision tree instructions."""
+    from moa.prompts import DEBATE_ADVERSARIAL_JUDGE_SYSTEM
+    assert "Decision Tree" in DEBATE_ADVERSARIAL_JUDGE_SYSTEM
+    assert "├──" in DEBATE_ADVERSARIAL_JUDGE_SYSTEM
+    assert "└──" in DEBATE_ADVERSARIAL_JUDGE_SYSTEM
+    assert "max 3 levels deep" in DEBATE_ADVERSARIAL_JUDGE_SYSTEM
