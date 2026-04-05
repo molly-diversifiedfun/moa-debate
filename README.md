@@ -154,8 +154,10 @@ moa review --staged --personas --discourse       # reviewers challenge each othe
 ```bash
 cat research.md plan.md | moa ask "Is this plan solid? What am I missing?"
 cat plan.md | moa ask --persona product "Is this discovery or delivery theater?"
-cat plan.md | moa debate --style adversarial "Should we execute this plan?"
+cat plan.md | moa debate --style adversarial "Should we quit our jobs and execute this plan?"
 ```
+
+Adversarial debate on a plan produces: verdict, key assumptions flagged, conditional analysis ("if you've validated demand, then X; if not, then Y"), and specific de-risking steps you can do in days, not months.
 
 ### Ship faster as a solopreneur
 ```bash
@@ -179,8 +181,11 @@ moa ask --persona "Ann Handley" "Would a real person say this out loud?"
 ### Settle team debates
 ```bash
 moa debate "Event sourcing vs CRUD for orders?"
+moa debate --style adversarial "Should we rewrite in Rust?"
 moa debate --persona "DHH,Kelsey Hightower" "Do we need Kubernetes?"
 ```
+
+Debates include live battle commentary, argument previews at each round, and convergence detection. Adversarial debates show which side's assumptions hold up, conditional scenarios, and how to de-risk the decision.
 
 For the full situational guide with 12 real scenarios, see **[docs/USE_CASES.md](docs/USE_CASES.md)**.
 

@@ -57,12 +57,20 @@ cat research-notes.md implementation-plan.md | moa ask "Given this research, is 
 # Ask product thinkers specifically
 cat plan.md | moa ask --persona product "Is this a real product or a feature factory? What would Shreya Doshi say about the leverage here?"
 
-# Let the plan get attacked
-cat plan.md | moa debate --style adversarial "Should we execute this plan as written?"
+# THE KILLER USE CASE: adversarial debate on your plan
+cat plan.md | moa debate --style adversarial "We have $200K and 2 engineers. Should we quit our jobs and execute this plan?"
 
-# Or have specific experts weigh in
+# Have specific experts weigh in
 cat architecture-doc.md | moa ask --persona "Martin Kleppmann,Kelsey Hightower" "Review this architecture for distributed systems pitfalls"
 ```
+
+**What adversarial debate gives you on a plan:**
+- **Key Assumptions** — what you left out that would change the answer
+- **It Depends On...** — conditional analysis: "If you've validated with 10+ users, then X. If this is just an idea, then Y."
+- **How to De-Risk This** — 3-5 specific steps you can do in days, not months (customer interviews, landing page tests, validation milestones)
+- **Verdict** — with the single most important next step
+
+The adversarial format forces one model to find every weakness in your plan while another defends it. The result is more honest than asking "what do you think?" — which gets you polite agreement.
 
 **Why MOA:** Three models reading your plan catch different blind spots. One notices the missing error handling. Another questions your scaling assumptions. A third asks why you're building something you could buy.
 
@@ -156,15 +164,17 @@ moa debate --style adversarial "Should we rewrite our backend in Rust?"
 
 # Persona debate: specific thinkers argue
 moa debate --persona "DHH,Kelsey Hightower" "Do we actually need Kubernetes?"
-
-# The output shows:
-# - What the debate settled (things all models agreed on after arguing)
-# - Remaining disagreements (genuine open questions)
-# - Strongest arguments (which model made the best case)
-# - What changed during debate (who conceded what)
 ```
 
-**Why debate over just asking:** Models that revise after seeing challenges produce better reasoning than models answering in isolation. The challenge round prevents sycophantic agreement — models MUST find flaws before they can agree.
+**What you get from adversarial debate:**
+- **Live battle commentary** — see which models are fighting, argument previews, agreement scores
+- **Key Assumptions** — what was assumed because the question didn't specify
+- **It Depends On...** — "If you've validated demand, then X. If not, then Y."
+- **How to De-Risk** — specific actions to reduce risk before committing
+- **What Changed** — which side conceded points during the debate
+- **Bottom Line** — clear verdict with the most important next step
+
+**Why debate over just asking:** Models that revise after seeing challenges produce better reasoning than models answering in isolation. The forced challenge round prevents sycophantic agreement — models MUST find flaws before they can agree. And the de-risking section gives you actionable next steps regardless of the verdict.
 
 ---
 
