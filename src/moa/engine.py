@@ -1328,8 +1328,19 @@ async def _run_adversarial_debate(
     if len(available) < 2:
         raise RuntimeError("Adversarial debate requires at least 2 available models.")
 
-    angel_model = available[0]
-    devil_model = available[1]
+    # Pick the two strongest models from DIFFERENT providers for max diversity
+    # Sort by cost (proxy for capability) — most expensive = strongest
+    ranked = sorted(
+        available,
+        key=lambda m: m.output_cost_per_mtok,
+        reverse=True,
+    )
+    angel_model = ranked[0]
+    # Devil should be from a different provider than angel
+    devil_model = next(
+        (m for m in ranked[1:] if m.provider != angel_model.provider),
+        ranked[1],  # fallback to same provider if only one available
+    )
     cost = QueryCost(tier=f"adversarial-{tier_name}")
     start = time.monotonic()
     all_rounds = []
