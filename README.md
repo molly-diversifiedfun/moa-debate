@@ -270,6 +270,30 @@ When you use `/moa` from Claude Code, the slash command shells out to `moa ask`.
 
 For code review, the git diff is sent as the user message with role-specific system prompts (security, architecture, etc.).
 
+**Using your own files as context:**
+
+```bash
+# Point at a single file
+moa ask --context ./research.md "Rework this plan for a 2-person team"
+
+# Point at a directory (auto-detects project type)
+moa ask --context . "How should I structure this app?"
+
+# Pipe multiple files (they become part of the query)
+cat brief.md plan.md | moa ask "Review this plan given the brief. What's missing?"
+
+# Pipe research + ask for a rework
+cat research-findings.md | moa ask --persona product "Given this research, should we pivot?"
+
+# Pipe code for review
+cat src/auth.py src/middleware.py | moa ask "Find security issues in this code"
+```
+
+Piped input and `--context` work differently:
+- `--context` reads project files and adds structured context (project type, directory tree, key files)
+- Piped input (`cat file | moa ask`) sends the raw file content as part of the query
+- Both can be used together: `cat notes.md | moa ask --context . "How does this fit my project?"`
+
 ### Inspecting the Full Prompt
 
 Use `--debug` to see exactly what gets sent to models:
