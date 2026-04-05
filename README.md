@@ -259,9 +259,28 @@ Every mode uses structured prompt templates in `src/moa/prompts.py`:
 
 ### How Context Injection Works
 
-`moa ask --context .` reads your project structure — README, package.json/pyproject.toml, directory tree — and prepends it to the query. Models answer with awareness of your specific codebase, not generic advice.
+When you run `moa ask --context . "How should I structure this?"`:
 
-For code review, the diff is sent directly to specialist models with role-specific system prompts.
+1. `context.py` scans the directory: reads README, package.json/pyproject.toml/Cargo.toml (whatever exists), builds a directory tree (3 levels, 80 items max), reads .env.example
+2. Everything gets concatenated and truncated to 12K chars
+3. The context is prepended to your query: `[PROJECT CONTEXT]\n{context}\n[/PROJECT CONTEXT]\n\nQuestion: your query`
+4. Models see it as part of the user message — no magic
+
+When you use `/moa` from Claude Code, the slash command shells out to `moa ask`. Pass `--context .` to inject the current project. Without it, models answer generically.
+
+For code review, the git diff is sent as the user message with role-specific system prompts (security, architecture, etc.).
+
+### Inspecting the Full Prompt
+
+Use `--debug` to see exactly what gets sent to models:
+
+```bash
+moa ask --debug --context . --persona "DHH" "Should I add a cache layer?"
+```
+
+This shows the complete prompt after all injections (context + persona + piped input) so you can verify what models actually see. Useful for tweaking — if the answer isn't what you expected, check the prompt first.
+
+All system prompts live in `src/moa/prompts.py` — edit them directly to change model behavior.
 
 ### Module Map
 
@@ -313,6 +332,7 @@ State files live in `~/.moa/`: usage.json, history.jsonl, cache/cache.db, sessio
 | `--rounds` | debate | 2 | Debate rounds |
 | `--raw` | all | off | Plain text (for piping) |
 | `--no-cache` | ask | off | Bypass cache |
+| `--debug` | ask | off | Show full prompt sent to models |
 
 ## HTTP API
 

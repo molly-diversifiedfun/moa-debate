@@ -194,6 +194,7 @@ def ask(
     research: str = typer.Option("auto", "--research", "-R", help="Research mode: auto, lite, deep, off"),
     layers: int = typer.Option(1, "--layers", "-L", help="MoA aggregation layers (1-3, default 1)"),
     persona: str = typer.Option(None, "--persona", help="Persona names (comma-separated) or category: code, product, content, architecture, builder"),
+    debug: bool = typer.Option(False, "--debug", help="Show the full prompt sent to models"),
 ):
     """Run a Mixture-of-Agents query across multiple models.
 
@@ -202,6 +203,7 @@ def ask(
     Use --cascade for legacy flow. Use --tier for manual tier selection.
     Use --research deep for thorough multi-hop web research.
     Use --persona "DHH,Shreya Doshi" or --persona product for persona-flavored responses.
+    Use --debug to see the exact prompt sent to models.
     """
     # ── Context injection ──────────────────────────────────────────────────
     if context:
@@ -239,6 +241,17 @@ def ask(
             )
 
     effective_tier = "cascade" if cascade else ("adaptive" if adaptive else tier)
+
+    # ── Debug: show full prompt ────────────────────────────────────────
+    if debug:
+        from rich.text import Text
+        prompt_preview = query[:3000] + ("..." if len(query) > 3000 else "")
+        console.print(Panel(
+            Text(prompt_preview),
+            title="[bold yellow]DEBUG: Full prompt sent to models[/bold yellow]",
+            border_style="yellow",
+        ))
+        console.print(f"[dim]  Prompt length: {len(query):,} chars | Mode: {effective_tier} | Research: {research}[/dim]\n")
 
     # ── Cache check ─────────────────────────────────────────────────────
     if not no_cache:
