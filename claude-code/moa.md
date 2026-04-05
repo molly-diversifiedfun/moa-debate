@@ -2,7 +2,7 @@ Ask a question using the multi-model ensemble (adaptive routing with research).
 
 Usage: /moa $ARGUMENTS
 
-Runs your question through multiple AI models in parallel, synthesizes their responses, auto-searches the web when models disagree, and uses domain-aware confidence thresholds. Strategic and judgment questions automatically get "It Depends On..." conditionals and "How to De-Risk This" action steps.
+Runs your question through multiple AI models in parallel, synthesizes their responses, auto-searches the web when models disagree (Firecrawl + DuckDuckGo fallback), and uses domain-aware confidence thresholds. Circuit breakers auto-skip broken models. Strategic and judgment questions automatically get "It Depends On..." conditionals and "How to De-Risk This" action steps.
 
 Steps:
 1. Run: `~/github/moa-debate/.venv/bin/moa ask "$ARGUMENTS"`
