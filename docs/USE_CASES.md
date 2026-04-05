@@ -1,309 +1,244 @@
-# MoA Use Cases — Complete Reference
+# When to Use MOA — Real Scenarios
 
-Every way `moa` fits into your workflow, with the right command for each situation.
+Not a feature list. These are situations you'll actually be in, and how MOA helps.
 
 ---
 
-## 1. Daily Development
+## "I need to make an architecture decision and I don't want to get it wrong"
 
-### 1a. Quick Questions
-**When:** Factoid, syntax lookup, "how do I…?"
-**Mode:** `moa ask` (auto-classifies as SIMPLE → 1-2 fast models, no aggregation)
+You're picking a database, choosing a framework, or deciding whether to split a monolith. The wrong call costs months.
 
 ```bash
-moa ask "What's the difference between useEffect and useLayoutEffect?"
-moa ask "How do I create a temporary table in PostgreSQL?"
+# Get 3-4 frontier models to independently analyze your options
+moa ask "We have a Next.js app with 50K DAU. Should we use Redis or Memcached for session storage? We're on AWS with a 3-person team."
+
+# Want DHH's take specifically?
+moa ask --persona "DHH" "We're considering moving from our Rails monolith to microservices. The team is 4 engineers. Convince me this is a bad idea."
+
+# Or let two models fight about it
+moa debate --style adversarial "Should we migrate from PostgreSQL to DynamoDB for our event storage?"
 ```
 
-**What happens:** Haiku or Flash answers directly. ~$0.001, 1-3s.
+**Why MOA beats asking one model:** Claude might favor one approach, GPT another. When all three independently say "don't do it" — that's a strong signal. When they disagree, the output tells you exactly where and why.
 
 ---
 
-### 1b. Design Decisions
-**When:** "Should I use X or Y?" — architecture, framework choice, trade-off analysis
-**Mode:** `moa ask` (auto-classifies as COMPLEX → 3-4 frontier models + synthesis)
+## "I wrote code and I want a real review, not a rubber stamp"
+
+You're about to merge something and want actual scrutiny — not "looks good to me."
 
 ```bash
-moa ask "Should I use microservices or a monolith for a 3-person startup?"
-moa ask "Redis vs Memcached for session storage with 50K DAU?"
-```
-
-**What happens:** Multiple models propose independently → domain-capped agreement detection → pairwise ranking picks the best response → synthesizer produces structured output with agreement/disagreement/attribution. ~$0.15, 15-30s.
-
----
-
-### 1c. Design Decisions with Personas
-**When:** You want specific perspectives, not generic AI advice
-**Mode:** `moa ask --persona`
-
-```bash
-# Product strategy
-moa ask --persona product "Is this feature worth building for 3 paying customers?"
-moa ask --persona "Shreya Doshi" "Is this high-leverage work or just busy work?"
-
-# Architecture
-moa ask --persona "DHH" "Do we need Kubernetes for this?"
-moa ask --persona architecture "Serverless vs containers for a 5-person team?"
-
-# Builder/solopreneur
-moa ask --persona builder "Fastest path to first revenue for an invoice tool?"
-moa ask --persona "Pieter Levels" "Can I ship this without a database?"
-```
-
-**Persona categories:** code, architecture, product, content, builder
-
----
-
-### 1d. Niche Tooling Questions (Research-Augmented)
-**When:** Specific library/API/framework questions where models may have training gaps
-**Mode:** `moa ask` (auto-researches on disagreement) or `--research deep`
-
-```bash
-# Auto: models disagree → web search → re-ask with docs
-moa ask "How do I configure Turborepo remote caching with a self-hosted server?"
-
-# Manual deep research: 2-3 rounds of web search → single frontier model
-moa ask --research deep "What are the current rate limits for the Firecrawl API?"
-```
-
-**What happens:** On auto, if models disagree the system derives search queries, fetches docs via Firecrawl, and re-asks with context. Deep research runs multi-hop search and synthesizes with Opus. ~$0.15-0.30, 30-60s.
-
----
-
-## 2. Contentious Decisions (Debate)
-
-### 2a. Peer Debate
-**When:** You want models to argue it out and challenge each other
-**Mode:** `moa debate`
-
-```bash
-moa debate "Monorepo vs polyrepo for 4 brands?"
-moa debate --rounds 3 "GraphQL gateway vs REST with BFF pattern?"
-```
-
-**What happens:** Models independently answer → forced challenge round (find flaws) → revision rounds → convergence check (exit early if >70% agreement) → judge synthesizes. Output shows: Verdict, What the Debate Settled, Remaining Disagreements, Strongest Arguments.
-
----
-
-### 2b. Adversarial Debate (Angel vs Devil)
-**When:** You want one side to argue FOR and one AGAINST
-**Mode:** `moa debate --style adversarial`
-
-```bash
-moa debate --style adversarial "Should we rewrite the backend in Rust?"
-moa debate --style adversarial "Should I quit my job to build this full-time?"
-```
-
-**What happens:** Angel argues FOR, Devil argues AGAINST, over multiple rounds. Judge synthesizes both perspectives. Output shows: Verdict, Advocate's Strongest Points, Critic's Strongest Points, What Changed During Debate, Bottom Line.
-
----
-
-### 2c. Persona Debates
-**When:** You want specific thinkers to debate each other
-**Mode:** `moa debate --persona`
-
-```bash
-moa debate --persona "DHH,Kelsey Hightower" "Do we need Kubernetes?"
-moa debate --persona product "Build vs buy for analytics?"
-moa debate --style adversarial --persona builder "Build an audience first or the product first?"
-```
-
----
-
-## 3. Code Review
-
-### 3a. Expert Panel (Default)
-**When:** Pre-merge review of code changes
-**Mode:** `moa review`
-
-```bash
+# 4 specialist reviewers (security, architecture, performance, correctness)
 moa review --staged
-moa review path/to/changes.diff
-git diff main..feature | moa review
-```
 
-**4 specialist reviewers:** Security (GPT-4.1), Architecture (Sonnet), Performance (Gemini 2.5 Pro), Correctness (Gemini 3.1 Pro). Aggregator (Opus) synthesizes with APPROVE / REQUEST CHANGES / BLOCK verdict.
+# Or get reviewed by famous engineers who won't be nice about it
+moa review --staged --persona "Rich Hickey"
+# "Is this simple or just easy? You're complecting three unrelated concerns."
 
----
+moa review --staged --persona "Sandi Metz"
+# "This class has 7 constructor parameters. The limit is 4."
 
-### 3b. Famous Engineer Personas
-**When:** You want review from specific engineering philosophies
-**Mode:** `moa review --personas` or `--persona "name"`
-
-```bash
-moa review --staged --personas                    # Fowler, Beck, Hickey, Metz
-moa review --staged --persona "Rich Hickey"       # "Is this simple or just easy?"
-moa review --staged --persona "Sandi Metz"        # Classes <100 lines, methods <5
-moa review --staged --persona "Kent Beck"         # "Where are the missing tests?"
-moa review --staged --persona architecture        # Hightower, Kleppmann, DHH
-```
-
----
-
-### 3c. Discourse Mode
-**When:** You want reviewers to react to each other's findings
-**Mode:** `moa review --discourse`
-
-```bash
+# Want reviewers to challenge EACH OTHER's findings?
 moa review --staged --discourse
+```
+
+**Why MOA beats a single reviewer:** GPT-4.1 catches SQL injection that Sonnet misses. Gemini flags the N+1 query that both missed. Different models have different training data — they literally see different bugs.
+
+---
+
+## "I did a bunch of research and I need someone to sanity-check my plan"
+
+You've been researching for hours. You have notes, a plan, maybe a brief. You want a gut-check before you commit.
+
+```bash
+# Pipe your research + plan directly
+cat research-notes.md implementation-plan.md | moa ask "Given this research, is this plan solid? What am I missing? What would you cut?"
+
+# Ask product thinkers specifically
+cat plan.md | moa ask --persona product "Is this a real product or a feature factory? What would Shreya Doshi say about the leverage here?"
+
+# Let the plan get attacked
+cat plan.md | moa debate --style adversarial "Should we execute this plan as written?"
+
+# Or have specific experts weigh in
+cat architecture-doc.md | moa ask --persona "Martin Kleppmann,Kelsey Hightower" "Review this architecture for distributed systems pitfalls"
+```
+
+**Why MOA:** Three models reading your plan catch different blind spots. One notices the missing error handling. Another questions your scaling assumptions. A third asks why you're building something you could buy.
+
+---
+
+## "I'm building a side project and I need to ship fast"
+
+You're a solopreneur or indie hacker. You don't have a team to bounce ideas off. You need practical advice from people who've done it.
+
+```bash
+# Ask the builders
+moa ask --persona builder "I want to build a SaaS tool for freelancers to track invoices. What's the fastest path to first revenue?"
+# Pieter Levels: "Ship in a weekend. No database. localStorage."
+# Daniel Vassallo: "Sell a template first. Don't build software until 10 people pay."
+
+# Specific persona for specific advice
+moa ask --persona "Pieter Levels" "Can I ship this without a backend?"
+
+moa ask --persona "Daniel Vassallo" "Should I build an audience or the product first?"
+
+# Product positioning
+moa ask --persona "April Dunford" "How do I position my tool against Notion, which is free?"
+```
+
+---
+
+## "The models are giving me a confident answer but I'm not sure I trust it"
+
+You asked about a specific API, a niche tool, or a technical detail — and the answer sounds right but feels too confident.
+
+```bash
+# MOA auto-detects this. If models disagree, it searches the web and re-asks.
+moa ask "What are the rate limits for the Firecrawl search endpoint?"
+
+# Force deep research if you know it's niche
+moa ask --research deep "How do I configure Turborepo remote caching with a self-hosted server?"
+
+# The output tells you what happened:
+# 🔍 RESEARCHED — models initially disagreed → web search → re-asked with docs
+# ⚠️ High agreement on a specific topic. Models may share the same training data gap.
+```
+
+**The trust signals:** Every response shows you the confidence bar (██████░░░░), which models agreed, which disagreed, and why the synthesizer picked one model's answer over another. You can verify instead of trust.
+
+---
+
+## "I need to validate a claim or fact-check something"
+
+Someone told you something. An AI told you something. You want to know if it's actually true.
+
+```bash
+moa ask "Is it true that React Server Components can't use useState? Verify with specifics."
+
+moa ask "Does AWS Lambda still have a 15-minute timeout limit as of 2026?"
+
+# When models cite different numbers, the factual verifier flags it:
+# 🔬 Verification: Models cite conflicting values (15 min vs 10 min)
+```
+
+**Why MOA:** If Claude says "yes" and GPT says "no" — you know to look it up. If all three say the same thing with specifics, you can be confident. A single model can hallucinate; three independent models hallucinating the same wrong answer is much rarer.
+
+---
+
+## "I'm writing copy and I want it to not sound like AI wrote it"
+
+You need a headline, a landing page, an email — and you want it to be specific, persuasive, and human.
+
+```bash
+# Ogilvy: specific, benefit-driven, long-form sells
+moa ask --persona "David Ogilvy" "Write 5 headlines for a landing page selling an AI invoice tool for freelancers"
+
+# Handley: clear, conversational, no jargon
+moa ask --persona "Ann Handley" "Review this email for clarity. Would a real person say this out loud?"
+
+# Both perspectives at once
+moa ask --persona content "Rewrite this landing page copy. The current version sounds like a robot wrote it."
+```
+
+---
+
+## "We're debating something on the team and we need structured thinking"
+
+Two engineers disagree. The PM has a different opinion. Nobody's going to change their mind without structured arguments.
+
+```bash
+# Peer debate: models challenge each other, find flaws, revise
+moa debate "Should we use event sourcing or CRUD for our order management system?"
+
+# Adversarial: one side argues FOR, one argues AGAINST
+moa debate --style adversarial "Should we rewrite our backend in Rust?"
+
+# Persona debate: specific thinkers argue
+moa debate --persona "DHH,Kelsey Hightower" "Do we actually need Kubernetes?"
+
+# The output shows:
+# - What the debate settled (things all models agreed on after arguing)
+# - Remaining disagreements (genuine open questions)
+# - Strongest arguments (which model made the best case)
+# - What changed during debate (who conceded what)
+```
+
+**Why debate over just asking:** Models that revise after seeing challenges produce better reasoning than models answering in isolation. The challenge round prevents sycophantic agreement — models MUST find flaws before they can agree.
+
+---
+
+## "I want to review code but I want a specific perspective, not generic feedback"
+
+Different reviewers catch different things. A security specialist won't notice bad test coverage. A TDD expert won't catch SQL injection.
+
+```bash
+# Security-focused review
+cat src/auth/*.py | moa review --raw
+
+# "Is this over-engineered?" — ask Rich Hickey
+cat src/services/ | moa review --persona "Rich Hickey"
+
+# "Where are the tests?" — ask Kent Beck
+moa review --staged --persona "Kent Beck"
+
+# Architecture review from the ops perspective
+cat docker-compose.yml k8s/ | moa review --persona architecture
+
+# Full review with discourse: reviewers react to each other
 moa review --staged --personas --discourse
+# Security: "I found SQL injection on line 42"
+# Architecture: "CONNECT — that same function also violates SRP"
+# Performance: "AGREE — and it's called in a loop, making it O(n) injection risk"
 ```
-
-**What happens:** After initial review, each reviewer sees all other findings and can AGREE, CHALLENGE, CONNECT, or SURFACE new issues. Catches cross-cutting problems that isolated reviewers miss.
 
 ---
 
-## 4. Research & Fact-Checking
+## "I need to make a high-stakes decision and want maximum confidence"
 
-### 4a. Cross-Model Fact Validation
-**When:** You need to verify a claim across multiple models
+Payment systems, auth flows, data migrations — things where being wrong costs real money.
 
 ```bash
-moa ask "Is it true that React Server Components can't use useState?"
-moa ask "Does AWS Lambda still have a 15-minute timeout limit?"
-```
+# Multi-layer verification: proposers → synthesize → proposers check the synthesis → re-synthesize
+moa ask --layers 2 --tier ultra "Design a payment processing pipeline with idempotency guarantees for a system handling $10M/month"
 
-**Why MOA:** When 3 models from different providers agree on a fact, it's almost certainly correct. When they disagree, the system flags it and can auto-research.
+# Use --debug to see exactly what was sent to models
+moa ask --debug --layers 2 "Design the retry logic for failed payment captures"
+```
 
 ---
 
-### 4b. Deep Research
-**When:** Complex investigation needing grounded, cited answers
+## "I'm in Claude Code and want quick access"
+
+MOA integrates as slash commands — no terminal switching needed.
 
 ```bash
-moa ask --research deep "Compare Drizzle ORM vs Prisma for production Next.js"
-moa ask --research deep "What are best practices for LiteLLM provider failover?"
-```
+# In Claude Code:
+/moa "Should we add a cache layer?"
+/moa --persona product "Is this feature worth building?"
+/moa --research deep "How does Vercel Workflow DevKit handle retries?"
 
-**What happens:** Multi-hop web search (2-3 rounds via Firecrawl) → identifies gaps → searches deeper → single frontier model synthesizes with citations. ~30-60s.
+/moa-debate "Monorepo vs polyrepo?"
+/moa-debate --style adversarial "Should we rewrite in Go?"
 
----
-
-## 5. Content & Copy
-
-### 5a. Content Personas
-**When:** Writing copy, headlines, or reviewing content quality
-
-```bash
-moa ask --persona "David Ogilvy" "Write a headline for an AI invoice tool"
-moa ask --persona "Ann Handley" "Review this landing page copy for clarity"
-moa ask --persona content "Does this email subject line work?"
+/moa-review                    # Review staged changes
+/moa-review --personas         # Fowler/Beck/Hickey/Metz review
 ```
 
 ---
 
-## 6. Advanced Patterns
+## Quick Reference: Picking the Right Mode
 
-### 6a. Multi-Layer Verification
-**When:** High-stakes queries where you want extra accuracy
-
-```bash
-moa ask --layers 2 "Design a payment pipeline with idempotency guarantees"
-```
-
-**What happens:** Layer 1 proposes and synthesizes normally. Layer 2 re-runs proposers on the synthesis to catch aggregator errors, then re-aggregates. ~2x cost but catches synthesis mistakes.
-
----
-
-### 6b. Security Review via Pipe
-
-```bash
-cat src/auth/middleware.ts | moa ask --raw "Analyze for security vulnerabilities"
-git diff HEAD~3 | moa ask --raw "What are the riskiest changes in this diff?"
-```
-
----
-
-### 6c. Spec Compliance Check
-
-```bash
-echo "Spec: Password reset via email link, expires 24h.
-Implementation: [paste code]" | moa ask --raw "Does this satisfy the spec?"
-```
-
----
-
-## 7. Trust & Transparency Features
-
-### 7a. Confidence Indicators
-Every response includes:
-- **Agreement score** (0-100%) with visual bar
-- **Domain classification** (FACTUAL/TECHNICAL/CREATIVE/JUDGMENT/STRATEGIC)
-- **Domain-specific threshold** (factual questions need higher agreement)
-- **Pairwise ranking winner** (which model gave the best response)
-
-### 7b. Correlated Confidence Warning
-When models agree strongly on a niche topic, MOA warns:
-> ⚠️ High agreement on a specific topic. Models may share the same training data gap.
-
-### 7c. Factual Verification
-On factual queries, a cheap model checks proposals for suspicious precision, conflicting numbers, and unqualified claims.
-
-### 7d. Session Memory
-MOA logs queries and response previews within a session. The synthesizer is told to acknowledge contradictions with previous answers.
-
----
-
-## 8. Integration Points
-
-### Via Claude Code
-```bash
-/moa "question"                    # Adaptive routing query
-/moa --persona product "question"  # With personas
-/moa --research deep "question"    # Deep research
-/moa-debate "question"             # Multi-round debate
-/moa-review                        # Expert panel on current changes
-```
-
-### Via Terminal
-```bash
-moa ask "question"                          # Default adaptive
-moa ask --persona "DHH" "question"          # Persona
-moa ask --research deep "question"          # Deep research
-moa ask --layers 2 "question"              # Multi-layer verification
-moa debate "question"                       # Peer debate
-moa debate --style adversarial "question"   # Angel vs devil
-moa review --staged                         # Code review
-moa review --staged --personas --discourse  # Full review with discourse
-moa status                                  # Budget + model roster
-moa history --cost                          # Spend tracking
-moa verify                                 # Test model connectivity
-```
-
-### Via Pipe
-```bash
-git diff HEAD~3 | moa ask --raw "Riskiest changes?"
-cat package.json | moa ask --raw "Outdated or vulnerable deps?"
-curl -s api.example.com/health | moa ask --raw "Normal response?"
-```
-
----
-
-## 9. Persona Reference
-
-| Category | Personas | Best For |
-|----------|----------|----------|
-| **code** | Martin Fowler, Kent Beck, Rich Hickey, Sandi Metz | Code review, refactoring, testing, simplicity |
-| **architecture** | Kelsey Hightower, Martin Kleppmann, DHH | Infrastructure, distributed systems, monolith advocacy |
-| **product** | Shreya Doshi, Marty Cagan, April Dunford | Strategy, positioning, prioritization |
-| **content** | David Ogilvy, Ann Handley | Headlines, copy, voice, clarity |
-| **builder** | Pieter Levels, Daniel Vassallo | Ship fast, small bets, solopreneur decisions |
-
-Select by name (`--persona "DHH,Kent Beck"`) or category (`--persona product`). Fuzzy matching — `"dhh"` finds DHH.
-
----
-
-## Cost Reference
-
-| Use Case | Mode | Cost | Latency |
-|----------|------|------|---------|
-| Quick question | adaptive:simple | ~$0.001 | 1-3s |
-| Standard query | adaptive:standard | ~$0.05 | 8-15s |
-| Complex decision | adaptive:complex | ~$0.15 | 15-30s |
-| Deep research | --research deep | ~$0.15-0.30 | 30-60s |
-| Code review | moa review | ~$0.05-0.10 | 15-25s |
-| Debate (2 rounds) | moa debate | ~$0.15-0.25 | 30-60s |
-| Adversarial debate | --style adversarial | ~$0.20-0.30 | 60-120s |
-| Multi-layer | --layers 2 | ~2x base | ~2x base |
-
-> **Daily budget:** $5.00/day (configurable). At typical usage, that's 50-100+ queries/day.
+| Situation | Command | Cost | Time |
+|-----------|---------|------|------|
+| Quick lookup | `moa ask "..."` | ~$0.001 | 2s |
+| Need reasoning | `moa ask "..."` | ~$0.05 | 10s |
+| Architecture decision | `moa ask --persona architecture "..."` | ~$0.15 | 20s |
+| Niche tooling question | `moa ask "..."` (auto-researches) | ~$0.10 | 15s |
+| Deep research | `moa ask --research deep "..."` | ~$0.25 | 45s |
+| Code review | `moa review --staged` | ~$0.10 | 20s |
+| Persona review | `moa review --staged --persona "name"` | ~$0.05 | 15s |
+| Peer debate | `moa debate "..."` | ~$0.20 | 60s |
+| Adversarial debate | `moa debate --style adversarial "..."` | ~$0.25 | 90s |
+| Plan review | `cat plan.md \| moa ask "Review this"` | ~$0.10 | 15s |
+| High-stakes verification | `moa ask --layers 2 --tier ultra "..."` | ~$0.50 | 40s |

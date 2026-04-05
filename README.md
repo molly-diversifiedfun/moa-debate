@@ -134,81 +134,82 @@ Every response includes transparency features:
 - **Factual verification** — on factual queries, checks for suspicious precision and conflicting numbers
 - **Session memory** — tracks previous answers to flag contradictions within a session
 
-## Usage
+## Usage: What Can You Do?
 
-### Ask
-
+### Make better decisions
 ```bash
-moa ask "What are the tradeoffs of SQLite in production?"
-moa ask --research deep "Firecrawl API rate limits and pricing"
-moa ask --persona "DHH" "Do I need a microservice?"
-moa ask --persona product "Is this feature worth building?"
-moa ask --layers 2 "Design a payment pipeline"     # verification pass
-moa ask --tier ultra "High-stakes architecture question"
+moa ask "Redis or Memcached for sessions with 50K DAU?"
+moa ask --persona "DHH" "Convince me this microservice is a bad idea"
+moa debate --style adversarial "Should we migrate to DynamoDB?"
 ```
 
-### Debate
-
-Models argue, challenge each other, revise their positions, and a judge synthesizes.
-
+### Get a real code review
 ```bash
-# Peer debate — models challenge each other, then revise
-moa debate "Monorepo vs polyrepo?"
+moa review --staged                              # 4 specialist reviewers
+moa review --staged --persona "Sandi Metz"       # "7 params? Limit is 4."
+moa review --staged --personas --discourse       # reviewers challenge each other
+```
 
-# Adversarial — angel argues FOR, devil argues AGAINST
-moa debate --style adversarial "Should we rewrite in Rust?"
+### Review your plans and research
+```bash
+cat research.md plan.md | moa ask "Is this plan solid? What am I missing?"
+cat plan.md | moa ask --persona product "Is this discovery or delivery theater?"
+cat plan.md | moa debate --style adversarial "Should we execute this plan?"
+```
 
-# With personas
+### Ship faster as a solopreneur
+```bash
+moa ask --persona builder "Fastest path to first revenue for an invoice SaaS?"
+moa ask --persona "Pieter Levels" "Can I ship this without a database?"
+```
+
+### Verify things you don't trust
+```bash
+moa ask "Does AWS Lambda still have a 15-min timeout?"   # cross-model fact check
+moa ask --research deep "Firecrawl API rate limits"      # grounded in real docs
+moa ask --debug "..."                                     # see exactly what was sent
+```
+
+### Write better copy
+```bash
+moa ask --persona "David Ogilvy" "Write 5 headlines for this landing page"
+moa ask --persona "Ann Handley" "Would a real person say this out loud?"
+```
+
+### Settle team debates
+```bash
+moa debate "Event sourcing vs CRUD for orders?"
 moa debate --persona "DHH,Kelsey Hightower" "Do we need Kubernetes?"
 ```
 
-**How peer debate works:**
-1. Models answer independently
-2. **Challenge round**: each model MUST find flaws in the others' responses (no sycophancy)
-3. Models revise, addressing the challenges
-4. **Convergence check**: if agreement >70%, exit early (saves cost)
-5. Judge synthesizes: what settled, what's still disputed, strongest arguments
+For the full situational guide with 12 real scenarios, see **[docs/USE_CASES.md](docs/USE_CASES.md)**.
 
-### Code Review
+### Personas (14 perspectives across 5 categories)
+
+| Category | Personas | Ask them about |
+|----------|----------|---------------|
+| **code** | Fowler, Beck, Hickey, Metz | Refactoring, testing, complexity, SRP |
+| **architecture** | Hightower, Kleppmann, DHH | Infra, distributed systems, simplicity |
+| **product** | Doshi, Cagan, Dunford | Leverage, discovery, positioning |
+| **content** | Ogilvy, Handley | Headlines, copy, clarity |
+| **builder** | Levels, Vassallo | Shipping fast, small bets |
 
 ```bash
-moa review --staged                              # 4 specialists
-moa review --staged --personas                   # Fowler/Beck/Hickey/Metz
-moa review --staged --persona "Sandi Metz"       # specific persona
-moa review --staged --discourse                  # reviewers react to each other
-git diff main..feature | moa review              # pipe a diff
+moa ask --persona "DHH,Kent Beck" "..."     # by name (fuzzy matching)
+moa ask --persona product "..."             # all personas in a category
 ```
 
-**Default specialists:** Security (GPT-4.1), Architecture (Sonnet), Performance (Gemini 2.5 Pro), Correctness (Gemini 3.1 Pro)
-
-**Discourse mode**: After reviewing independently, each reviewer sees all other findings and reacts with AGREE, CHALLENGE, CONNECT, or SURFACE. Catches cross-cutting issues.
-
-### Personas
-
-14 named perspectives across 5 categories. Use on ask, debate, or review.
-
-| Category | Personas | Philosophy |
-|----------|----------|------------|
-| **code** | Martin Fowler, Kent Beck, Rich Hickey, Sandi Metz | Refactoring, TDD, simplicity, SRP |
-| **architecture** | Kelsey Hightower, Martin Kleppmann, DHH | Operational simplicity, distributed systems, monolith advocacy |
-| **product** | Shreya Doshi, Marty Cagan, April Dunford | Leverage, discovery vs delivery, positioning |
-| **content** | David Ogilvy, Ann Handley | Direct response, clarity, voice |
-| **builder** | Pieter Levels, Daniel Vassallo | Ship fast, small bets, validate before building |
+### All Commands
 
 ```bash
-moa ask --persona "name,name"     # by name (fuzzy matching)
-moa ask --persona category        # all personas in a category
-```
-
-### Other Commands
-
-```bash
-moa status          # Model roster, API keys, budget
-moa verify          # Ping all models
-moa history --cost  # Spend tracking
-moa test            # Run automated smoke tests
-moa test --full     # Extended test suite
-moa serve           # HTTP API server
+moa ask "..."           # Multi-model query (adaptive routing)
+moa debate "..."        # Multi-round debate with challenge rounds
+moa review --staged     # Expert panel code review
+moa status              # Model roster, API keys, budget
+moa verify              # Ping all models
+moa test                # Automated smoke tests
+moa history --cost      # Spend tracking
+moa serve               # HTTP API server
 ```
 
 ## Architecture
