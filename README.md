@@ -1,254 +1,318 @@
 # moa-debate
 
-Multi-model AI debate system. Runs queries through diverse AI models in parallel (GPT, Claude, Gemini, DeepSeek, Grok, Llama), synthesizes their responses, and auto-searches the web when models disagree on niche topics.
+**Ask one AI a question, you get one perspective. Ask fourteen, you get the truth.**
 
-**Why?** A single LLM has blind spots. Multiple models from different providers catch different errors, surface different perspectives, and produce more reliable answers — especially for architecture decisions, code review, and fact-checking.
+moa-debate is a CLI tool that runs your questions through multiple AI models in parallel — GPT, Claude, Gemini, DeepSeek, Grok, Llama — and synthesizes their responses into a single, more reliable answer. When models disagree, it automatically searches the web to ground the response in real documentation.
 
-## Install
+## The Problem
+
+Every LLM has blind spots. Claude is great at reasoning but sometimes hallucinates API details. GPT is fast but occasionally misses edge cases. Gemini knows Google's ecosystem cold but may be weaker elsewhere. When you ask a single model a question, you get that model's best guess — including its biases, training gaps, and confident mistakes.
+
+**Multi-model consensus fixes this.** When three models from three different providers independently reach the same conclusion, that conclusion is almost certainly correct. When they disagree, the disagreement itself is the signal — it tells you the question is harder than it looks, and maybe you should look it up.
+
+## Who This Is For
+
+- **Developers making architecture decisions** — "Should I use microservices?" gets a more balanced answer from 4 models than from 1
+- **Tech leads reviewing code** — 4 specialist reviewers (security, architecture, performance, correctness) across different models catch more bugs than any single reviewer
+- **Solopreneurs shipping fast** — ask Pieter Levels and Daniel Vassallo personas for advice: "Can I ship this without a database?"
+- **Anyone who wants to trust AI more** — every response shows you the confidence score, where models agreed, where they differed, and which model had the strongest reasoning
+
+## How It Works
+
+```
+You ask a question
+    ↓
+Classifier determines complexity (SIMPLE/STANDARD/COMPLEX)
+and domain (FACTUAL/TECHNICAL/CREATIVE/JUDGMENT/STRATEGIC)
+    ↓
+Routes to the right model pool (1 cheap model for simple, 3-4 frontier models for complex)
+    ↓
+Models answer independently in parallel
+    ↓
+Agreement detection with domain-specific thresholds
+(factual questions need 45% agreement, strategic only 20%)
+    ↓
+┌─ High agreement → Synthesize best elements → Done
+└─ Low agreement → Search the web → Re-ask with docs → Synthesize
+    ↓
+Output: Answer + Confidence bar + Where models agreed + Where they differed + Attribution
+```
+
+### What makes this different from just asking Claude?
+
+1. **Independent verification.** Models from different companies with different training data agree or disagree. Agreement = high confidence. Disagreement = worth investigating.
+2. **Automatic research.** When models disagree on facts, the system searches the web and re-asks with documentation. You get grounded answers, not guesses.
+3. **Transparency.** Every response shows you the agreement score, which model said what, and why the synthesizer chose one model's reasoning over another. You can verify instead of trust.
+4. **Cost-aware routing.** Simple questions hit one cheap model (~$0.001). Complex questions use frontier models (~$0.15). You don't pay $0.25 to answer "What port does HTTP use?"
+
+## Quick Start
 
 ```bash
 git clone https://github.com/molly-diversifiedfun/moa-debate.git
 cd moa-debate
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-```
 
-## API Keys
-
-Set at least one provider. More providers = more diverse perspectives.
-
-```bash
-# Core (at least one required)
+# Set API keys (at least one provider required, more = better)
 export ANTHROPIC_API_KEY=sk-ant-...
 export OPENAI_API_KEY=sk-...
 export GEMINI_API_KEY=AI...
 
-# Optional — adds model diversity
-export DEEPSEEK_API_KEY=...
-export XAI_API_KEY=...
-export TOGETHER_API_KEY=...
-
-# Optional — enables research-augmented routing
+# Optional: enables auto-research when models disagree
 export FIRECRAWL_API_KEY=fc-...
 
-# Verify what's available
+# Verify what's connected
 moa status
-```
 
-## Usage
-
-### Ask a question (adaptive routing)
-
-```bash
+# Ask something
 moa ask "Should I use microservices or a monolith for a 3-person startup?"
 ```
 
-Adaptive routing classifies your query by complexity (SIMPLE/STANDARD/COMPLEX) and domain (FACTUAL/TECHNICAL/CREATIVE/JUDGMENT/STRATEGIC), routes to the right models, and applies domain-aware agreement thresholds. If models disagree and you have a Firecrawl key, it automatically searches the web for reference material and re-asks with context.
+### What the output looks like
 
-### Personas
+```
+╭──────────── adaptive:standard (STRATEGIC) ⚠️ SPLIT (14%) ─────────────╮
+│ ## Answer                                                              │
+│ Start with a monolith...                                               │
+│                                                                        │
+│ ## Where Models Agreed                                                 │
+│ - Monolith first for teams under 5                                     │
+│ - Microservices add coordination overhead that kills velocity          │
+│                                                                        │
+│ ## Where Models Differed                                               │
+│ - GPT-5.4: emphasized deployment simplicity                            │
+│ - Sonnet: focused on team cognitive load                               │
+│ - Gemini: raised the "strangler fig" migration pattern                │
+│                                                                        │
+│ ## Why This Answer                                                     │
+│ Gemini's reasoning was strongest because...                            │
+╰────────────────────────────────────────────────────────────────────────╯
+  Agreement: 87% (3/3 aligned) · Domain: STRATEGIC · Threshold: 20%
+  ██████████████████░░ HIGH — models converged
+  $0.15 · 12,340 tokens · ⏱ 15.2s · 👑 Best: gemini-2.5-pro
+```
 
-14 named personas across 5 categories. Use on any command — ask, debate, or review.
+## Core Concepts
+
+### Adaptive Routing
+
+Every query is classified by complexity and domain. Simple factual questions hit 1-2 cheap models. Complex strategic questions use 3-4 frontier models with synthesis. You never configure this — it just works.
+
+### Domain-Capped Agreement
+
+Not all disagreement is equal. On a factual question ("what port does HTTP use?"), models should agree — low agreement means someone's wrong. On a strategic question ("should we use Kubernetes?"), disagreement is expected — it means there's genuine nuance. Domain-specific thresholds determine when to trigger research vs synthesize.
+
+| Domain | Threshold | Why |
+|--------|-----------|-----|
+| FACTUAL | 45% | Models should agree on facts |
+| TECHNICAL | 40% | Some implementation opinions OK |
+| CREATIVE | 30% | Diversity is expected |
+| JUDGMENT | 25% | Opinion splits are normal |
+| STRATEGIC | 20% | Complex decisions always diverge |
+
+### Research-Augmented Routing
+
+When models disagree, the system:
+1. Uses a cheap model to derive 2-3 search queries
+2. Searches the web via [Firecrawl](https://firecrawl.dev)
+3. Re-asks the same models with reference docs injected
+4. Synthesizes with source attribution
+
+This prevents the biggest failure mode of multi-model consensus: **correlated hallucination**. When all models share the same training gap (e.g., niche tooling), they confidently guess different wrong answers. Research grounds them in reality.
+
+You can also force deep research: `moa ask --research deep "query"` runs 2-3 rounds of web search, identifies gaps, and synthesizes with a single frontier model.
+
+### Pairwise Ranking
+
+Instead of picking the longest response (a common but terrible heuristic), a cheap model compares responses pairwise to select the genuinely best one. The footer shows `👑 Best: model-name`.
+
+### Trust Signals
+
+Every response includes transparency features:
+- **Confidence bar** (██████░░░░) with HIGH/MODERATE/MIXED/LOW label
+- **Correlated confidence warning** — alerts you when high agreement on a niche topic might be shared hallucination
+- **Factual verification** — on factual queries, checks for suspicious precision and conflicting numbers
+- **Session memory** — tracks previous answers to flag contradictions within a session
+
+## Usage
+
+### Ask
 
 ```bash
-# By name (comma-separated, fuzzy matching)
-moa ask --persona "DHH,Pieter Levels" "Should I add a database to my side project?"
-moa debate --persona "Shreya Doshi,April Dunford" "How should we position this product?"
-moa review --staged --persona "Rich Hickey,Kent Beck"
-
-# By category
+moa ask "What are the tradeoffs of SQLite in production?"
+moa ask --research deep "Firecrawl API rate limits and pricing"
+moa ask --persona "DHH" "Do I need a microservice?"
 moa ask --persona product "Is this feature worth building?"
-moa debate --persona architecture "Kubernetes vs serverless for a 5-person team?"
-moa review --staged --persona code
+moa ask --layers 2 "Design a payment pipeline"     # verification pass
+moa ask --tier ultra "High-stakes architecture question"
 ```
 
-| Category | Personas | Best for |
-|----------|----------|----------|
-| **code** | Martin Fowler, Kent Beck, Rich Hickey, Sandi Metz | Code review, refactoring, testing |
-| **architecture** | Kelsey Hightower, Martin Kleppmann, DHH | Infrastructure, distributed systems, simplicity |
-| **product** | Shreya Doshi, Marty Cagan, April Dunford | Product strategy, positioning, prioritization |
-| **content** | David Ogilvy, Ann Handley | Copy, headlines, voice, clarity |
-| **builder** | Pieter Levels, Daniel Vassallo | Shipping fast, small bets, solopreneur decisions |
+### Debate
 
-### Research mode
+Models argue, challenge each other, revise their positions, and a judge synthesizes.
 
 ```bash
-# Auto-search on disagreement (default — no flag needed)
-moa ask "How do I configure Claude Code hooks in settings.json?"
+# Peer debate — models challenge each other, then revise
+moa debate "Monorepo vs polyrepo?"
 
-# Force deep multi-hop research
-moa ask --research deep "What are the best practices for LiteLLM provider failover?"
-
-# Disable research
-moa ask --research off "What's the capital of France?"
-```
-
-Deep research runs 2-3 rounds of web search via Firecrawl, identifies gaps, searches deeper, then synthesizes with a single frontier model. Takes 30-60 seconds but grounds answers in real documentation.
-
-### Code review (Expert Panel)
-
-```bash
-# Default: 4 specialist reviewers
-moa review --staged
-
-# Famous engineer personas
-moa review --staged --personas
-moa review --staged --persona "Rich Hickey,Sandi Metz"
-
-# With discourse: reviewers react to each other's findings
-moa review --staged --discourse
-
-# Combine: personas + discourse
-moa review --staged --personas --discourse
-
-# Pipe from git
-git diff main..feature-branch | moa review
-```
-
-**Default specialists:** Security (GPT-4.1), Architecture (Sonnet), Performance (Gemini 2.5 Pro), Correctness (Gemini 3.1 Pro)
-
-**Discourse mode** (`--discourse`): After the initial review, each reviewer sees all other findings and can AGREE, CHALLENGE, CONNECT, or SURFACE new issues. Catches cross-cutting problems that isolated reviewers miss.
-
-### Multi-round debate
-
-```bash
-# Peer debate (default) — models challenge each other, then revise
-moa debate "Monorepo vs polyrepo for 4 brands?"
-
-# Adversarial debate — angel argues FOR, devil argues AGAINST, judge synthesizes
+# Adversarial — angel argues FOR, devil argues AGAINST
 moa debate --style adversarial "Should we rewrite in Rust?"
 
 # With personas
 moa debate --persona "DHH,Kelsey Hightower" "Do we need Kubernetes?"
-
-# More rounds
-moa debate --rounds 3 "Event sourcing vs CRUD for order management?"
 ```
 
-**Peer debates** now include a forced challenge round (models must find flaws before revising) and auto-exit when models converge (saves cost on early agreement).
+**How peer debate works:**
+1. Models answer independently
+2. **Challenge round**: each model MUST find flaws in the others' responses (no sycophancy)
+3. Models revise, addressing the challenges
+4. **Convergence check**: if agreement >70%, exit early (saves cost)
+5. Judge synthesizes: what settled, what's still disputed, strongest arguments
 
-**Adversarial debates** assign explicit roles: one model advocates FOR, one argues AGAINST, and a judge synthesizes both perspectives.
-
-### Multi-layer aggregation
+### Code Review
 
 ```bash
-# Standard: proposers → aggregator (1 layer, default)
-moa ask --tier pro "Compare ORMs for Next.js"
-
-# Verified: proposers → aggregator → proposers verify → re-aggregate (2 layers)
-moa ask --tier pro --layers 2 "Design a payment processing pipeline"
+moa review --staged                              # 4 specialists
+moa review --staged --personas                   # Fowler/Beck/Hickey/Metz
+moa review --staged --persona "Sandi Metz"       # specific persona
+moa review --staged --discourse                  # reviewers react to each other
+git diff main..feature | moa review              # pipe a diff
 ```
 
-Layer 2 re-runs proposers on the synthesis to catch aggregator errors. Recommended for complex queries where accuracy matters more than speed.
+**Default specialists:** Security (GPT-4.1), Architecture (Sonnet), Performance (Gemini 2.5 Pro), Correctness (Gemini 3.1 Pro)
 
-### Manual tier selection
+**Discourse mode**: After reviewing independently, each reviewer sees all other findings and reacts with AGREE, CHALLENGE, CONNECT, or SURFACE. Catches cross-cutting issues.
+
+### Personas
+
+14 named perspectives across 5 categories. Use on ask, debate, or review.
+
+| Category | Personas | Philosophy |
+|----------|----------|------------|
+| **code** | Martin Fowler, Kent Beck, Rich Hickey, Sandi Metz | Refactoring, TDD, simplicity, SRP |
+| **architecture** | Kelsey Hightower, Martin Kleppmann, DHH | Operational simplicity, distributed systems, monolith advocacy |
+| **product** | Shreya Doshi, Marty Cagan, April Dunford | Leverage, discovery vs delivery, positioning |
+| **content** | David Ogilvy, Ann Handley | Direct response, clarity, voice |
+| **builder** | Pieter Levels, Daniel Vassallo | Ship fast, small bets, validate before building |
 
 ```bash
-moa ask --tier flash "What's 2+2?"          # ~$0.001, 1s
-moa ask --tier lite "Explain useEffect"      # ~$0.05, 8s
-moa ask --tier pro "Compare ORMs for Next.js" # ~$0.09, 15s
-moa ask --tier ultra "Design a payment system" # ~$0.25, 20s
+moa ask --persona "name,name"     # by name (fuzzy matching)
+moa ask --persona category        # all personas in a category
 ```
 
-### Other commands
+### Other Commands
 
 ```bash
-moa status                # Model roster, API key status, budget
-moa verify                # Test connectivity to all models
-moa history --last 20     # Recent queries
-moa history --cost        # Daily spend summary
-moa serve --port 8787     # Start HTTP API server
+moa status          # Model roster, API keys, budget
+moa verify          # Ping all models
+moa history --cost  # Spend tracking
+moa test            # Run automated smoke tests
+moa test --full     # Extended test suite
+moa serve           # HTTP API server
 ```
 
 ## Architecture
-
-### 4 Query Modes
-
-| Mode | Trigger | What happens | Cost |
-|------|---------|-------------|------|
-| **Adaptive** (default) | `moa ask` | Classify → route → propose → domain-capped agreement → pairwise rank → synthesize. Auto-researches on disagreement. | $0.001–$0.15 |
-| **Deep Research** | `--research deep` | Multi-hop web search → single frontier model with full context | $0.15–$0.30 |
-| **Cascade** (legacy) | `--cascade` | Lite → evaluate confidence → escalate to ultra if needed | $0.05–$0.30 |
-| **Debate** | `moa debate` | Challenge round → multi-round revision → convergence check → judge | $0.20–$0.40 |
-
-### Smart Agreement Detection
-
-Agreement thresholds are domain-aware (inspired by [duh](https://github.com/msitarzewski/duh)):
-
-| Domain | Threshold | Rationale |
-|--------|-----------|-----------|
-| FACTUAL | 45% | Models should agree on facts |
-| TECHNICAL | 40% | Some implementation opinions OK |
-| CREATIVE | 30% | Diversity expected |
-| JUDGMENT | 25% | Opinion splits are normal |
-| STRATEGIC | 20% | Complex decisions always diverge |
-
-Below threshold → research + re-ask. Above → synthesize.
-
-Additionally, proposals are pairwise-ranked by a cheap model (inspired by [LLM-Blender](https://github.com/yuchenlin/LLM-Blender)) to pick the best response, not just the longest.
-
-### 4-Tier Model System
-
-| Tier | Proposers | Aggregator | Cost |
-|------|-----------|-----------|------|
-| **flash** | Gemini Flash | none | ~$0.001 |
-| **lite** | 4o-mini, Flash (+optional) | Sonnet | ~$0.05 |
-| **pro** | GPT-4.1, Gemini 2.5 Pro, Haiku (+optional) | Sonnet | ~$0.09 |
-| **ultra** | GPT-5.4, Gemini 3.1 Pro, Sonnet (+optional) | Opus | ~$0.25 |
 
 ### 14 Models, 6 Providers
 
 **Core** (need at least one): Anthropic (Opus, Sonnet, Haiku), OpenAI (GPT-5.4, GPT-4.1, 4o-mini), Google (Gemini 3.1 Pro, 2.5 Pro, Flash)
 
-**Optional** (bonus diversity): DeepSeek (V3, R1), xAI (Grok 4, 4.1-fast), Together/Meta (Llama-4-Maverick)
+**Optional** (auto-included when keys are set): DeepSeek (V3, R1), xAI (Grok 4, 4.1-fast), Together/Meta (Llama-4-Maverick)
 
-Optional models are automatically included when their API keys are set. No configuration needed.
+### 4 Tiers
 
-### Research-Augmented Routing
+| Tier | Models | Aggregator | Cost | When |
+|------|--------|-----------|------|------|
+| flash | Gemini Flash | none | ~$0.001 | Factoids, lookups |
+| lite | 4o-mini, Flash | Sonnet | ~$0.05 | Standard questions |
+| pro | GPT-4.1, Gemini Pro, Haiku | Sonnet | ~$0.09 | Reasoning, analysis |
+| ultra | GPT-5.4, Gemini 3.1, Sonnet | Opus | ~$0.25 | High-stakes decisions |
 
-When adaptive routing detects low agreement (below domain-specific threshold), it:
-1. Derives 2-3 search queries using a cheap model (Haiku/Flash)
-2. Searches the web via Firecrawl (2-3 results)
-3. Re-runs the same proposers with reference material injected
-4. Synthesizes with source attribution
+### Design Decisions
 
-Requires `FIRECRAWL_API_KEY`. Falls back gracefully without it.
+**Why multiple providers, not multiple models from one provider?**
+Models from the same provider share training data and biases. GPT-4.1 and GPT-5.4 will often make the same mistakes. True diversity requires different companies, different training pipelines, different architectural decisions.
 
-### Debate Flow (with improvements from [duh](https://github.com/msitarzewski/duh) and [Multi-Agents-Debate](https://github.com/Skytliang/Multi-Agents-Debate))
+**Why domain-capped thresholds instead of a flat agreement score?**
+A flat 35% threshold triggers research too aggressively on opinion questions (where disagreement is expected) and not aggressively enough on factual questions (where disagreement means someone's hallucinating).
 
-**Peer debate:**
-```
-Round 0: Independent responses
-Challenge: Models find flaws in each other's responses (forced disagreement)
-Round 1-N: Models revise, addressing challenges
-Convergence check: exit early if agreement >70%
-Final: Judge synthesizes
-```
+**Why a challenge round before debate revision?**
+Without it, models tend to converge on the first answer that sounds reasonable (sycophantic agreement). Forcing them to find flaws first produces genuinely stronger arguments. Inspired by [duh](https://github.com/msitarzewski/duh).
 
-**Adversarial debate** (`--style adversarial`):
-```
-Round 0: Angel argues FOR, Devil argues AGAINST
-Round 1-N: Each sees the other's position and revises
-Convergence check: exit early if agreement >70%
-Final: Judge synthesizes both perspectives
-```
+**Why pairwise ranking instead of just picking the longest response?**
+Longer isn't better. A concise, correct answer should beat a verbose, hedging one. Pairwise comparison with a cheap model (~$0.003) catches this. Inspired by [LLM-Blender](https://github.com/yuchenlin/LLM-Blender).
+
+**Why research on disagreement instead of on every query?**
+Most queries don't need web search — the models know the answer. Search adds 3-5 seconds of latency and costs Firecrawl credits. By only triggering on disagreement, you get the benefit when it matters and skip the overhead when it doesn't.
+
+**Why personas instead of just "review this code"?**
+Different reviewers catch different things. A security specialist finds injection vulnerabilities. Sandi Metz finds classes with too many responsibilities. Rich Hickey finds unnecessary complexity. Generic "review this" misses the specific angles that matter.
+
+### How Prompts Work
+
+Every mode uses structured prompt templates in `src/moa/prompts.py`:
+
+- **Synthesizer prompts** tell the aggregator to output structured sections (Answer, Agreement, Disagreement, Attribution). The models produce markdown that the CLI renders.
+- **Challenge prompts** instruct models to find flaws, not just agree. "You MUST identify at least one flaw per response."
+- **Persona prompts** inject philosophy: "You think like Rich Hickey. Ask: 'Is this simple or just easy?'"
+- **Research context** is injected as reference material with a framing that tells models to reason independently: "Use it if applicable, but do not assume this information is complete."
+
+### How Context Injection Works
+
+`moa ask --context .` reads your project structure — README, package.json/pyproject.toml, directory tree — and prepends it to the query. Models answer with awareness of your specific codebase, not generic advice.
+
+For code review, the diff is sent directly to specialist models with role-specific system prompts.
 
 ### Module Map
 
 ```
 src/moa/
-├── cli.py        # Typer CLI (9 commands)
-├── engine.py     # Core: adaptive routing, cascade, debate, review, deep research
+├── cli.py        # Typer CLI (10 commands including test)
+├── engine.py     # Core: adaptive, cascade, debate, review, deep research
 ├── models.py     # 14 models, 4 tiers, 14 personas, reviewer roles
-├── research.py   # SearchProvider protocol, Firecrawl integration, lite/deep search
+├── research.py   # SearchProvider protocol, Firecrawl, lite/deep search
+├── prompts.py    # All prompt templates
 ├── server.py     # FastAPI HTTP API (5 endpoints)
-├── prompts.py    # System prompts for synthesis/debate/review/research
 ├── context.py    # Project context detection + injection
 ├── config.py     # Constants (timeouts, budget, rate limits)
 ├── cache.py      # SQLite response caching (1hr TTL)
-├── budget.py     # Daily spend cap + tracking
+├── budget.py     # Daily spend cap ($5/day default)
 ├── history.py    # JSONL query logging
 └── verify.py     # Model connectivity test
 ```
+
+## Configuration
+
+All configuration via environment variables. No config files to manage.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ANTHROPIC_API_KEY` | — | Anthropic (Claude) API key |
+| `OPENAI_API_KEY` | — | OpenAI (GPT) API key |
+| `GEMINI_API_KEY` | — | Google (Gemini) API key |
+| `FIRECRAWL_API_KEY` | — | Firecrawl (web search). Optional — enables research |
+| `MAX_DAILY_SPEND_USD` | 5.00 | Daily cost cap (0 = unlimited) |
+| `MODEL_TIMEOUT_SECONDS` | 45 | Per-model call timeout |
+| `CACHE_TTL_HOURS` | 1 | Response cache TTL |
+| `MOA_SERVER_KEY` | — | API server auth key |
+
+State files live in `~/.moa/`: usage.json, history.jsonl, cache/cache.db, sessions/.
+
+## All Flags
+
+| Flag | Commands | Default | Description |
+|------|----------|---------|-------------|
+| `--persona` | ask, debate, review | — | Persona names or category |
+| `--research` | ask | `auto` | `auto`, `lite`, `deep`, `off` |
+| `--style` | debate | `peer` | `peer`, `adversarial` |
+| `--discourse` | review | off | Reviewers react to each other |
+| `--personas` | review | off | Use code review personas |
+| `--layers` | ask | 1 | Aggregation layers (1-3) |
+| `--tier` | ask, debate | auto | `flash`, `lite`, `pro`, `ultra` |
+| `--context` | ask, debate | — | Path for context injection |
+| `--rounds` | debate | 2 | Debate rounds |
+| `--raw` | all | off | Plain text (for piping) |
+| `--no-cache` | ask | off | Bypass cache |
 
 ## HTTP API
 
@@ -264,143 +328,23 @@ moa serve --port 8787
 | `/debate` | POST | `{"query": "...", "rounds": 2}` |
 | `/health` | GET | — |
 
-Optional auth via `X-MOA-Key` header (set `MOA_SERVER_KEY` env var).
-
-## Claude Code Integration
-
-MOA integrates with [Claude Code](https://claude.ai/code) as slash commands:
-
-```bash
-/moa "question"              # Adaptive routing query
-/moa-review                  # Expert panel on current changes
-/moa-debate "question"       # Multi-round debate
-```
-
-## Example Use Cases
-
-### Quick questions (~$0.001, 1-3s)
-```bash
-moa ask "What's the difference between useEffect and useLayoutEffect?"
-moa ask "How do I create a temporary table in PostgreSQL?"
-```
-
-### Design decisions with personas (~$0.05-0.15, 8-15s)
-```bash
-moa ask --persona product "Should we build this feature or buy a SaaS tool?"
-moa ask --persona "Shreya Doshi" "Is this high-leverage work or just busy work?"
-moa ask --persona "April Dunford" "How should we position against Notion?"
-```
-
-### Architecture review (~$0.15, 15-30s)
-```bash
-moa ask "Critique this architecture: Next.js → tRPC → PostgreSQL → Redis → S3."
-moa ask --persona architecture "Do we need a message queue for 1000 events/day?"
-moa ask --persona "DHH" "Is this microservice justified?"
-```
-
-### Content and copy review
-```bash
-moa ask --persona content "Review this landing page headline for clarity and impact"
-moa ask --persona "David Ogilvy" "Does this ad copy make a specific promise?"
-moa ask --persona "Ann Handley" "Would a real person say this out loud?"
-```
-
-### Solopreneur decisions
-```bash
-moa ask --persona builder "Should I build an audience first or the product first?"
-moa ask --persona "Pieter Levels" "Can I ship this without a database?"
-moa ask --persona "Daniel Vassallo" "What's the minimum viable test for this idea?"
-```
-
-### Security review via pipe
-```bash
-cat src/auth/middleware.ts | moa ask --raw "Analyze this for security vulnerabilities"
-git diff HEAD~3 | moa ask --raw "What are the riskiest changes in this diff?"
-```
-
-### Code review with famous engineers
-```bash
-moa review --staged --persona "Rich Hickey"    # "Is this simple or just easy?"
-moa review --staged --persona "Kent Beck"      # "Where are the missing tests?"
-moa review --staged --persona "Sandi Metz"     # "This class does too much"
-moa review --staged --discourse                # Reviewers react to each other
-```
-
-### Niche tooling questions (auto-researched)
-```bash
-moa ask "How do I configure Vercel Workflow DevKit for step-based execution?"
-moa ask --research deep "What are the current best practices for LiteLLM fallback chains?"
-```
-
-### Adversarial debates
-```bash
-moa debate --style adversarial "Should we rewrite the backend in Rust?"
-moa debate --style adversarial --persona "DHH,Kelsey Hightower" "Do we need Kubernetes?"
-```
-
-### Multi-round peer debates (~$0.20-0.40, 30-60s)
-```bash
-moa debate "Is it better to use TypeScript strict mode from day one or add it incrementally?"
-moa debate --rounds 3 "GraphQL gateway vs REST with BFF pattern?"
-moa debate --persona product "Build vs buy for analytics?"
-```
-
-### Fact validation
-```bash
-moa ask "Is it true that React Server Components can't use useState? Verify with specifics."
-moa ask "Does AWS Lambda still have a 15-minute timeout limit as of 2026?"
-```
-
-### Multi-layer verification
-```bash
-moa ask --layers 2 "Design a payment processing pipeline with idempotency guarantees"
-```
-
-## All Flags
-
-| Flag | Commands | Default | Options |
-|------|----------|---------|---------|
-| `--persona` | ask, debate, review | none | Names: `"DHH,Kent Beck"` or category: `code`, `product`, `content`, `architecture`, `builder` |
-| `--research` | ask | `auto` | `auto`, `lite`, `deep`, `off` |
-| `--style` | debate | `peer` | `peer`, `adversarial` |
-| `--discourse` | review | off | Flag — enables reviewer discourse round |
-| `--personas` | review | off | Flag — uses default code review personas |
-| `--layers` | ask | 1 | 1-3 aggregation layers |
-| `--tier` | ask, debate | varies | `flash`, `lite`, `pro`, `ultra` |
-| `--context` | ask, debate | none | Path to project for context injection |
-| `--rounds` | debate | 2 | Number of debate rounds |
-| `--raw` | ask, debate, review | off | Plain text output |
-| `--no-cache` | ask | off | Bypass response cache |
-| `--cascade` | ask | off | Legacy cascade flow |
-
-## Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MAX_DAILY_SPEND_USD` | 5.00 | Daily cost cap (0 = unlimited) |
-| `MODEL_TIMEOUT_SECONDS` | 45 | Per-model call timeout |
-| `AGGREGATOR_TIMEOUT_SECONDS` | 60 | Aggregator timeout |
-| `CACHE_TTL_HOURS` | 1 | Response cache TTL |
-| `MOA_SERVER_KEY` | none | API server auth key |
-
-Budget and history are tracked in `~/.moa/` (usage.json, history.jsonl, cache/cache.db).
-
 ## Testing
 
 ```bash
-pytest               # 26 tests
-pytest -v            # Verbose
-moa verify           # Test live model connectivity
+pytest          # 26 unit tests
+moa test        # 5 live smoke tests (~$0.50)
+moa test --full # 8 extended tests (~$1)
+moa verify      # Ping all models
 ```
 
 ## Acknowledgments
 
 Techniques adapted from:
-- [togethercomputer/MoA](https://github.com/togethercomputer/MoA) — multi-layer aggregation
+- [togethercomputer/MoA](https://github.com/togethercomputer/MoA) — multi-layer aggregation, the original Mixture-of-Agents paper
 - [msitarzewski/duh](https://github.com/msitarzewski/duh) — challenge rounds, convergence exit, domain-capped confidence
 - [spencermarx/open-code-review](https://github.com/spencermarx/open-code-review) — reviewer discourse, famous engineer personas
-- [Skytliang/Multi-Agents-Debate](https://github.com/Skytliang/Multi-Agents-Debate) — angel/devil/judge pattern
-- [yuchenlin/LLM-Blender](https://github.com/yuchenlin/LLM-Blender) — pairwise ranking
+- [Skytliang/Multi-Agents-Debate](https://github.com/Skytliang/Multi-Agents-Debate) — angel/devil/judge debate pattern
+- [yuchenlin/LLM-Blender](https://github.com/yuchenlin/LLM-Blender) — pairwise ranking for response selection
 
 ## License
 

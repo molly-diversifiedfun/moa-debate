@@ -5,3 +5,14 @@ __pycache__/
 dist/
 *.egg-info/
 .pytest_cache/
+.DS_Store
+
+# Internal project management (keep local, not public)
+HANDOFF.md
+TASKS.md
+CLAUDE.md
+.claude/
+.specs/
+docs/briefs/
+docs/explorations/
+.project-context.md
