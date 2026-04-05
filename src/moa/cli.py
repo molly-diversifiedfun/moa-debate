@@ -744,6 +744,12 @@ def debate(
     # Write full debate transcript to session file
     _write_debate_transcript(result, query, rounds, style)
 
+    # Log outcome for tracking (adversarial only — peer debates are exploratory)
+    if style == "adversarial" and result.get("debate_style") == "adversarial":
+        from .outcomes import log_debate
+        outcome_id = log_debate(result)
+        console.print(f"[dim]  🎯 Outcome ID: {outcome_id} — tag later with: moa outcome tag {outcome_id} --outcome '...' --result good[/dim]")
+
     # Export if requested
     if export:
         from .export import export_html, export_markdown
@@ -1236,6 +1242,116 @@ def test(
     console.print()
     console.print(results_table)
     console.print(f"\n[bold]{'✅' if failed == 0 else '⚠️'} {passed}/{passed+failed} passed[/bold]  ·  ${total_cost:.4f}  ·  {total_time/1000:.1f}s total")
+
+
+@app.command()
+def outcome(
+    action: str = typer.Argument(..., help="Action: log, tag, or list"),
+    debate_id: str = typer.Argument(None, help="Debate outcome ID"),
+    decision: str = typer.Option(None, "--decision", "-d", help="What you decided"),
+    result_text: str = typer.Option(None, "--outcome", "-o", help="What actually happened"),
+    result_tag: str = typer.Option("unknown", "--result", "-r", help="Result: good, bad, mixed"),
+    pending: bool = typer.Option(False, "--pending", help="Show only pending outcomes"),
+    stale: bool = typer.Option(False, "--stale", help="Show outcomes >30 days without follow-up"),
+    stats: bool = typer.Option(False, "--stats", help="Show accuracy statistics"),
+):
+    """Track debate outcomes: log decisions, tag results, view stats.
+
+    Examples:
+      moa outcome list                           # all outcomes
+      moa outcome list --pending                  # no outcome tagged yet
+      moa outcome list --stats                    # accuracy breakdown
+      moa outcome log <id> --decision "hired senior"
+      moa outcome tag <id> --outcome "great hire" --result good
+    """
+    from .outcomes import log_decision, tag_outcome, get_outcomes, compute_stats
+
+    if action == "list":
+        if stats:
+            s = compute_stats()
+            console.print(f"\n[bold]Outcome Tracking[/bold] — {s['total_debates']} debates, {s['with_outcomes']} with outcomes\n")
+
+            if s["with_outcomes"] > 0:
+                overall = s["overall"]
+                console.print(f"  Overall accuracy: [bold]{overall['correct']}/{overall['total']} ({overall['rate']:.0%})[/bold]\n")
+
+                if s["by_template"]:
+                    console.print("  [bold]By template:[/bold]")
+                    for name, acc in s["by_template"].items():
+                        console.print(f"    {name}: {acc['correct']}/{acc['total']} ({acc['rate']:.0%})")
+
+                if s["by_style"]:
+                    console.print("\n  [bold]By style:[/bold]")
+                    for name, acc in s["by_style"].items():
+                        console.print(f"    {name}: {acc['correct']}/{acc['total']} ({acc['rate']:.0%})")
+
+                if any(v["total"] > 0 for v in s["by_confidence"].values()):
+                    console.print("\n  [bold]By confidence:[/bold]")
+                    for bracket, acc in s["by_confidence"].items():
+                        if acc["total"] > 0:
+                            console.print(f"    {bracket}: {acc['correct']}/{acc['total']} ({acc['rate']:.0%})")
+
+                console.print(f"\n  Avg confidence: {s['avg_confidence']}/10")
+            else:
+                console.print("  [dim]No outcomes tagged yet. Run debates, then tag with 'moa outcome tag'.[/dim]")
+
+            console.print(f"  Pending: {s['pending']} debates awaiting outcome")
+            return
+
+        entries = get_outcomes(pending_only=pending, stale_only=stale)
+        if not entries:
+            console.print("[dim]No outcomes found.[/dim]")
+            return
+
+        table = Table(title="Debate Outcomes")
+        table.add_column("ID", style="cyan", no_wrap=True)
+        table.add_column("Date", style="dim")
+        table.add_column("Query", max_width=40)
+        table.add_column("Confidence", justify="center")
+        table.add_column("Decision", max_width=30)
+        table.add_column("Outcome", max_width=30)
+        table.add_column("Result", style="bold")
+
+        for e in entries[-20:]:  # last 20
+            date = e["ts"][:10]
+            conf = str(e.get("confidence") or "—")
+            dec = (e.get("decision") or "—")[:30]
+            out = (e.get("outcome") or "—")[:30]
+            tag = e.get("result_tag") or "—"
+            tag_style = {"good": "[green]good[/green]", "bad": "[red]bad[/red]",
+                         "mixed": "[yellow]mixed[/yellow]"}.get(tag, tag)
+            table.add_row(e["id"], date, e.get("query", "")[:40], conf, dec, out, tag_style)
+
+        console.print(table)
+        return
+
+    if action == "log":
+        if not debate_id:
+            console.print("[red]Usage: moa outcome log <debate-id> --decision '...'[/red]")
+            return
+        if not decision:
+            console.print("[red]Provide --decision: what you actually decided.[/red]")
+            return
+        if log_decision(debate_id, decision):
+            console.print(f"[green]✅ Decision logged for {debate_id}[/green]")
+        else:
+            console.print(f"[red]❌ Outcome ID not found: {debate_id}[/red]")
+        return
+
+    if action == "tag":
+        if not debate_id:
+            console.print("[red]Usage: moa outcome tag <debate-id> --outcome '...' --result good[/red]")
+            return
+        if not result_text:
+            console.print("[red]Provide --outcome: what actually happened.[/red]")
+            return
+        if tag_outcome(debate_id, result_text, result_tag):
+            console.print(f"[green]✅ Outcome tagged for {debate_id}: {result_tag}[/green]")
+        else:
+            console.print(f"[red]❌ Outcome ID not found: {debate_id}[/red]")
+        return
+
+    console.print(f"[red]Unknown action: {action}. Use 'list', 'log', or 'tag'.[/red]")
 
 
 if __name__ == "__main__":

@@ -8,6 +8,8 @@ GLOBAL_ENV = MOA_HOME / ".env"
 USAGE_FILE = MOA_HOME / "usage.json"
 HISTORY_FILE = MOA_HOME / "history.jsonl"
 CACHE_DIR = MOA_HOME / "cache"
+OUTCOMES_FILE = MOA_HOME / "outcomes.jsonl"
+TEMPLATES_DIR = MOA_HOME / "templates"
 
 # ── Timeouts ───────────────────────────────────────────────────────────────────
 MODEL_TIMEOUT_SECONDS = 45          # Per-model call timeout
