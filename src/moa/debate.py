@@ -1,15 +1,23 @@
-"""Multi-round debate: peer and adversarial (angel/devil/judge) patterns."""
+"""Multi-round debate: peer and adversarial (angel/devil/judge) patterns.
+
+Adversarial debates use a composable pipeline:
+  resolve_template → select_models → research → opening → rounds → judge → format_result
+
+Each stage is an async function: stage(state) -> state
+The DebateState dataclass carries all context between stages.
+"""
 
 import asyncio
 import re
 import time
 import unicodedata
+from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Callable
 
 from .config import DEBATE_TIMEOUT_SECONDS, AGGREGATOR_TIMEOUT_SECONDS
 from .budget import record_spend
 from .models import (
-    QueryCost, TIERS, get_aggregator,
+    ModelConfig, QueryCost, TIERS, get_aggregator,
 )
 from .prompts import (
     DEBATE_ROUND_SYSTEM, DEBATE_JUDGE_SYSTEM, STRATEGIC_ADDENDUM,
@@ -19,6 +27,452 @@ from .prompts import (
 )
 from .orchestrator import call_model, _check_budget_or_raise, _update_cost, compute_agreement
 
+
+# ════════���═════════════════════════════════════════════════════════════════════
+#  DEBATE STATE — flows through the pipeline
+# ══════════════════════════════════════════���═════════════════════════════���═════
+
+@dataclass
+class DebateState:
+    """Immutable-ish state that flows through each pipeline stage."""
+    # Input
+    query: str
+    rounds: int = 2
+    tier_name: str = "pro"
+    template_name: Optional[str] = None
+    on_progress: Callable = field(default=lambda msg: None, repr=False)
+
+    # Resolved by stages
+    template: Any = None  # Optional[DecisionTemplate]
+    angel_model: Optional[ModelConfig] = None
+    devil_model: Optional[ModelConfig] = None
+    research_context: str = ""
+    angel_pos: str = ""
+    devil_pos: str = ""
+    all_rounds: List[Dict] = field(default_factory=list)
+    converged_at: Optional[int] = None
+    judge_response: str = ""
+
+    # Tracking
+    cost: Optional[QueryCost] = None
+    model_status: Dict[str, str] = field(default_factory=dict)
+    start_time: float = 0.0
+
+
+# ═════���════════════════════════════════════════════════════════════════════════
+#  PIPELINE STAGES — each takes state, returns state
+# ═════════════════��═══════════════════════════��════════════════════════════════
+
+async def resolve_template(state: DebateState) -> DebateState:
+    """Stage 1: Resolve debate template from name or auto-detect."""
+    from .templates import get_template, detect_template
+
+    if state.template_name:
+        state.template = get_template(state.template_name)
+        if state.template:
+            state.on_progress(f"📋 Using '{state.template.name}' template: {state.template.description}")
+        else:
+            state.on_progress(f"⚠️  Unknown template '{state.template_name}' — running without template")
+    else:
+        state.template = detect_template(state.query)
+        if state.template:
+            state.on_progress(f"💡 Auto-detected '{state.template.name}' template — using domain framing")
+
+    return state
+
+
+async def select_models(state: DebateState) -> DebateState:
+    """Stage 2: Pick the strongest healthy angel/devil models across all tiers."""
+    from .models import available_models as get_all_available
+    from .health import should_skip
+
+    tier = TIERS.get(state.tier_name)
+    if not tier:
+        raise ValueError(f"Unknown tier: {state.tier_name}")
+
+    all_available = get_all_available()
+    healthy = [m for m in all_available if not should_skip(m.name)]
+    if len(healthy) < 2:
+        healthy = all_available
+    if len(healthy) < 2:
+        raise RuntimeError("Adversarial debate requires at least 2 available models.")
+
+    # Sort by capability (output cost as proxy)
+    ranked = sorted(healthy, key=lambda m: m.output_cost_per_mtok, reverse=True)
+    state.angel_model = ranked[0]
+    # Devil must be from a DIFFERENT provider for genuine diversity
+    state.devil_model = next(
+        (m for m in ranked[1:] if m.provider != state.angel_model.provider),
+        ranked[1],
+    )
+
+    # Log skipped unhealthy models
+    all_ranked = sorted(all_available, key=lambda m: m.output_cost_per_mtok, reverse=True)
+    if all_ranked[0].name != state.angel_model.name or (len(all_ranked) > 1 and all_ranked[1].name != state.devil_model.name):
+        skipped_names = [m.name.split("/")[-1] for m in all_ranked if should_skip(m.name)]
+        if skipped_names:
+            state.on_progress(f"⚡ Skipping unhealthy models: {', '.join(skipped_names)}")
+
+    return state
+
+
+async def research(state: DebateState) -> DebateState:
+    """Stage 3: Ground the debate in real web sources."""
+    try:
+        from .research import get_all_providers, format_research_context
+        providers = get_all_providers()
+        if not providers:
+            state.on_progress("📚 No research providers — debating from training data")
+            return state
+
+        provider_names = [type(p).__name__.replace("Provider", "") for p in providers]
+        state.on_progress(f"🔍 Researching both sides ({' → '.join(provider_names)})...")
+
+        all_results: list = []
+        seen_urls: set = set()
+        search_queries = [
+            state.query,
+            f"arguments for {state.query}",
+            f"arguments against {state.query}",
+            f"{state.query} evidence research data",
+        ]
+        if state.template:
+            search_queries.extend(state.template.research_queries)
+
+        for provider in providers:
+            for sq in search_queries:
+                try:
+                    results = await provider.search(sq, max_results=3)
+                    for r in results:
+                        if r.url and r.url not in seen_urls:
+                            seen_urls.add(r.url)
+                            all_results.append(r)
+                except Exception:
+                    continue
+            if len(all_results) >= 6:
+                break
+
+        if all_results:
+            from .config import RESEARCH_CONTEXT_MAX_CHARS_DEEP
+            state.research_context = format_research_context(all_results, max_chars=RESEARCH_CONTEXT_MAX_CHARS_DEEP)
+
+        if state.research_context:
+            source_count = state.research_context.count("Source: http")
+            state.on_progress(f"📚 Found {source_count} sources — both sides will cite real evidence")
+        else:
+            state.on_progress("📚 No research results — debating from training data")
+    except Exception:
+        pass  # research is best-effort
+
+    return state
+
+
+async def opening(state: DebateState) -> DebateState:
+    """Stage 4: Angel and devil form their opening arguments."""
+    angel_short = _short_name(state.angel_model)
+    devil_short = _short_name(state.devil_model)
+
+    # Battle card
+    _render_battle_card(state.on_progress, angel_short, devil_short)
+
+    # Build system prompts
+    angel_system = DEBATE_ANGEL_SYSTEM.format(previous_round="This is your opening argument.")
+    devil_system = DEBATE_DEVIL_SYSTEM.format(previous_round="This is your opening argument.")
+    if state.template:
+        angel_system += f"\n\nDecision context: {state.template.debater_context}"
+        devil_system += f"\n\nDecision context: {state.template.debater_context}"
+    if state.research_context:
+        cite_instruction = "\n\nCite specific sources from the research when making claims. Reference data, studies, or examples by name."
+        angel_system += f"\n\n{state.research_context}{cite_instruction}"
+        devil_system += f"\n\n{state.research_context}{cite_instruction}"
+
+    state.on_progress("__FIGHT_START__")
+    angel_r, devil_r = await asyncio.gather(
+        call_model(state.angel_model, [
+            {"role": "system", "content": angel_system},
+            {"role": "user", "content": state.query},
+        ], timeout=DEBATE_TIMEOUT_SECONDS),
+        call_model(state.devil_model, [
+            {"role": "system", "content": devil_system},
+            {"role": "user", "content": state.query},
+        ], timeout=DEBATE_TIMEOUT_SECONDS),
+    )
+    state.on_progress("__FIGHT_STOP__")
+
+    state.angel_pos = angel_r["content"] if angel_r else ""
+    state.devil_pos = devil_r["content"] if devil_r else ""
+
+    if angel_r:
+        _update_cost(state.cost, angel_r)
+        state.model_status[f"👼 {angel_short}"] = f"✅ R0:{angel_r['latency_s']}s"
+    else:
+        state.model_status[f"👼 {angel_short}"] = "❌ failed R0"
+    if devil_r:
+        _update_cost(state.cost, devil_r)
+        state.model_status[f"😈 {devil_short}"] = f"✅ R0:{devil_r['latency_s']}s"
+    else:
+        state.model_status[f"😈 {devil_short}"] = "❌ failed R0"
+
+    # Fallback if one side failed
+    if not state.angel_pos or not state.devil_pos:
+        from .models import available_models as get_all_available
+        ranked = sorted(get_all_available(), key=lambda m: m.output_cost_per_mtok, reverse=True)
+        remaining = [m for m in ranked[2:] if m.available] if len(ranked) > 2 else []
+        if not state.angel_pos and remaining:
+            state.angel_model = remaining[0]
+            angel_short = _short_name(state.angel_model)
+            fb = await call_model(state.angel_model, [
+                {"role": "system", "content": DEBATE_ANGEL_SYSTEM.format(previous_round="This is your opening argument.")},
+                {"role": "user", "content": state.query},
+            ])
+            if fb:
+                state.angel_pos = fb["content"]
+                _update_cost(state.cost, fb)
+                state.model_status[f"👼 {angel_short}"] = f"✅ R0:{fb['latency_s']}s (fallback)"
+        if not state.devil_pos and remaining:
+            fb_model = remaining[-1] if len(remaining) > 1 else remaining[0]
+            devil_short_fb = _short_name(fb_model)
+            if fb_model.name != state.angel_model.name if not state.angel_pos else True:
+                fb = await call_model(fb_model, [
+                    {"role": "system", "content": DEBATE_DEVIL_SYSTEM.format(previous_round="This is your opening argument.")},
+                    {"role": "user", "content": state.query},
+                ])
+                if fb:
+                    state.devil_pos = fb["content"]
+                    state.devil_model = fb_model
+                    _update_cost(state.cost, fb)
+                    state.model_status[f"😈 {devil_short_fb}"] = f"✅ R0:{fb['latency_s']}s (fallback)"
+
+    if not state.angel_pos or not state.devil_pos:
+        raise RuntimeError(
+            "Adversarial debate requires 2 responding models. "
+            "Available models may be rate-limited or unavailable."
+        )
+
+    state.all_rounds.append({"angel": state.angel_pos, "devil": state.devil_pos})
+
+    # Show opening theses
+    angel_thesis = _best_sentence(state.angel_pos)
+    devil_thesis = _best_sentence(state.devil_pos)
+    state.on_progress(f"\n   👼 ADVOCATE opens:")
+    state.on_progress(f"   │ \"{angel_thesis}\"")
+    state.on_progress(f"   │ ({_word_count(state.angel_pos)} words)")
+    state.on_progress(f"\n   😈 CRITIC opens:")
+    state.on_progress(f"   │ \"{devil_thesis}\"")
+    state.on_progress(f"   │ ({_word_count(state.devil_pos)} words)")
+
+    return state
+
+
+async def rounds(state: DebateState) -> DebateState:
+    """Stage 5: Revision rounds with convergence detection and auto-extension."""
+    angel_short = _short_name(state.angel_model)
+    devil_short = _short_name(state.devil_model)
+
+    prev_agreement_score = compute_agreement([state.angel_pos, state.devil_pos])["score"]
+    state.on_progress(f"\n   📊 Opening agreement: {prev_agreement_score:.0%}")
+
+    round_msgs = [
+        "⚔️  Round {n}: They've read each other's arguments. Gloves are off.",
+        "🔥 Round {n}: \"That's your best argument?\" Both sides revising...",
+        "💥 Round {n}: Neither is backing down. Sharpening positions...",
+        "🗡️  Round {n}: Going for the jugular...",
+        "🌪️  Round {n}: The debate intensifies...",
+    ]
+    max_rounds = state.rounds + 2  # allow up to 2 auto-extensions
+    round_num = 0
+    while round_num < max_rounds:
+        round_num += 1
+        msg = round_msgs[(round_num - 1) % len(round_msgs)].format(n=round_num)
+        state.on_progress(f"\n{msg}")
+        state.on_progress("__FIGHT_START__")
+
+        _angel_rev_sys = DEBATE_ANGEL_SYSTEM.format(
+            previous_round=f"The Critic's argument:\n{state.devil_pos}"
+        )
+        _devil_rev_sys = DEBATE_DEVIL_SYSTEM.format(
+            previous_round=f"The Advocate's argument:\n{state.angel_pos}"
+        )
+        if state.template:
+            _angel_rev_sys += f"\n\nDecision context: {state.template.debater_context}"
+            _devil_rev_sys += f"\n\nDecision context: {state.template.debater_context}"
+        if state.research_context:
+            _angel_rev_sys += f"\n\n{state.research_context}\n\nCite specific sources when making claims."
+            _devil_rev_sys += f"\n\n{state.research_context}\n\nCite specific sources when making claims."
+
+        angel_r, devil_r = await asyncio.gather(
+            call_model(state.angel_model, [
+                {"role": "system", "content": _angel_rev_sys},
+                {"role": "user", "content": state.query},
+            ], timeout=DEBATE_TIMEOUT_SECONDS),
+            call_model(state.devil_model, [
+                {"role": "system", "content": _devil_rev_sys},
+                {"role": "user", "content": state.query},
+            ], timeout=DEBATE_TIMEOUT_SECONDS),
+        )
+        state.on_progress("__FIGHT_STOP__")
+
+        if angel_r:
+            state.angel_pos = angel_r["content"]
+            _update_cost(state.cost, angel_r)
+            state.model_status[f"👼 {angel_short}"] = f"✅ R{round_num}:{angel_r['latency_s']}s"
+        if devil_r:
+            state.devil_pos = devil_r["content"]
+            _update_cost(state.cost, devil_r)
+            state.model_status[f"😈 {devil_short}"] = f"✅ R{round_num}:{devil_r['latency_s']}s"
+
+        state.all_rounds.append({"angel": state.angel_pos, "devil": state.devil_pos})
+
+        # Show evolved theses
+        state.on_progress(f"   👼 \"{_best_sentence(state.angel_pos)}\"")
+        state.on_progress(f"   😈 \"{_best_sentence(state.devil_pos)}\"")
+
+        # Convergence check with momentum detection
+        agreement = compute_agreement([state.angel_pos, state.devil_pos])
+        score = agreement["score"]
+        delta = abs(score - prev_agreement_score)
+
+        filled = int(score * 20)
+        bar = "█" * filled + "░" * (20 - filled)
+        state.on_progress(f"   [{bar}] {score:.0%} agreement")
+
+        if score > 0.7:
+            state.converged_at = round_num
+            state.on_progress("   🤝 They're... agreeing? Debate over.")
+            break
+        elif round_num >= state.rounds and delta < 0.03:
+            state.on_progress(f"   🪨 Positions hardened (Δ{delta:.0%}). Neither will budge.")
+            break
+        elif round_num >= state.rounds and delta >= 0.03 and round_num < max_rounds:
+            state.on_progress(f"   🔄 Still shifting (Δ{delta:.0%}) — extending debate...")
+        elif round_num >= max_rounds:
+            state.on_progress("   ⏰ Max rounds reached.")
+            break
+
+        prev_agreement_score = score
+
+    return state
+
+
+async def judge(state: DebateState) -> DebateState:
+    """Stage 6: Judge synthesizes both perspectives into a verdict."""
+    angel_short = _short_name(state.angel_model)
+    devil_short = _short_name(state.devil_model)
+    total_rounds = len(state.all_rounds) - 1
+
+    state.on_progress(f"\n{'─' * 40}")
+    state.on_progress(f"⚖️  JUDGE ENTERS ({total_rounds} rounds of testimony)")
+    state.on_progress(f"{'─' * 40}")
+
+    aggregator = get_aggregator(prefer_premium=True)
+    if not aggregator:
+        state.judge_response = f"**Advocate:**\n{state.angel_pos}\n\n---\n\n**Critic:**\n{state.devil_pos}"
+        return state
+
+    state.on_progress("__JUDGE_START__")
+    _judge_system = DEBATE_ADVERSARIAL_JUDGE_SYSTEM.format(
+        angel_position=state.angel_pos, devil_position=state.devil_pos
+    )
+    if state.template:
+        _judge_system += f"\n\n{state.template.judge_addendum}"
+    if state.research_context:
+        _judge_system += (
+            "\n\nThe following research was provided to both sides. "
+            "Verify that cited claims match the sources. Flag any claims "
+            "that aren't supported by the research.\n\n" + state.research_context
+        )
+
+    judge_result = await call_model(
+        aggregator,
+        [
+            {"role": "system", "content": _judge_system},
+            {"role": "user", "content": state.query},
+        ],
+        temperature=0.1,
+        timeout=AGGREGATOR_TIMEOUT_SECONDS,
+    )
+    state.on_progress("__JUDGE_STOP__")
+
+    if judge_result:
+        _update_cost(state.cost, judge_result, is_aggregator=True)
+        state.judge_response = judge_result["content"]
+    else:
+        state.judge_response = state.angel_pos
+
+    return state
+
+
+def format_result(state: DebateState) -> Dict[str, Any]:
+    """Stage 7: Assemble the final result dict."""
+    elapsed = int((time.monotonic() - state.start_time) * 1000)
+
+    research_sources = []
+    if state.research_context:
+        for line in state.research_context.split("\n"):
+            if line.startswith("Source: http"):
+                research_sources.append(line.replace("Source: ", "").strip())
+
+    return {
+        "response": state.judge_response,
+        "rounds": state.all_rounds,
+        "model_status": state.model_status,
+        "cost": state.cost,
+        "latency_ms": elapsed,
+        "converged_at": state.converged_at,
+        "debate_style": "adversarial",
+        "research_grounded": bool(state.research_context),
+        "research_sources": research_sources,
+        "research_context": state.research_context,
+        "query": state.query,
+        "angel_model": _short_name(state.angel_model) if state.angel_model else None,
+        "devil_model": _short_name(state.devil_model) if state.devil_model else None,
+        "template": state.template.name if state.template else None,
+    }
+
+
+# ���═══════════════════════════════════���═════════════════════════════════════════
+#  PIPELINE RUNNER
+# ═════���══════════════���══════════════════════════════════���══════════════════════
+
+# Default adversarial pipeline
+ADVERSARIAL_PIPELINE = [resolve_template, select_models, research, opening, rounds, judge]
+
+
+async def run_adversarial_pipeline(
+    query: str,
+    rounds_count: int = 2,
+    tier_name: str = "pro",
+    on_progress: Optional[Callable] = None,
+    template_name: Optional[str] = None,
+    pipeline: Optional[List[Callable]] = None,
+) -> Dict[str, Any]:
+    """Run the adversarial debate as a composable pipeline.
+
+    Each stage in the pipeline is an async function: stage(state) -> state.
+    Override `pipeline` to customize, skip, or reorder stages.
+    """
+    _check_budget_or_raise()
+
+    state = DebateState(
+        query=query,
+        rounds=rounds_count,
+        tier_name=tier_name,
+        template_name=template_name,
+        on_progress=on_progress or (lambda msg: None),
+        cost=QueryCost(tier=f"adversarial-{tier_name}"),
+        start_time=time.monotonic(),
+    )
+
+    stages = pipeline or ADVERSARIAL_PIPELINE
+    for stage_fn in stages:
+        state = await stage_fn(state)
+
+    return format_result(state)
+
+
+# ��═════════════════════════════���═══════════════════════════════════════════════
+#  PUBLIC API — peer debate (unchanged) + adversarial (now uses pipeline)
+# ══════���═══════════════════════════════════════════════════════════════════════
 
 async def run_debate(
     query: str,
@@ -37,15 +491,18 @@ async def run_debate(
       Final: Judge synthesizes
 
     Adversarial style (--style adversarial):
-      Round 0: Angel argues FOR, Devil argues AGAINST
-      Rounds 1-N: Each sees the other's position and revises
-      Final: Judge synthesizes both perspectives
+      Uses composable pipeline: resolve_template → select_models → research →
+      opening ��� rounds → judge → format_result
     """
     _progress = on_progress or (lambda msg: None)
 
     if debate_style == "adversarial":
-        return await _run_adversarial_debate(query, rounds, tier_name, on_progress=_progress, template_name=template_name)
+        return await run_adversarial_pipeline(
+            query, rounds_count=rounds, tier_name=tier_name,
+            on_progress=_progress, template_name=template_name,
+        )
 
+    # ── Peer debate (unchanged) ──────────────��────────────────────────────
     tier = TIERS.get(tier_name)
     if not tier:
         raise ValueError(f"Unknown tier: {tier_name}")
@@ -60,7 +517,7 @@ async def run_debate(
     model_status = {}
     converged_at = None
 
-    # ── Round 0: Independent ───────────────────────────────────────────────
+    # ── Round 0: Independent ─────────���─────────────────────────────────────
     names = [m.name.split("/")[-1] if "/" in m.name else m.name for m in available]
     _progress(f"📝 {len(available)} models forming independent opinions... ({', '.join(names)})")
     tasks = [call_model(m, [{"role": "user", "content": query}]) for m in available]
@@ -81,7 +538,7 @@ async def run_debate(
     if len(current_positions) < 2:
         raise RuntimeError("Less than 2 models responded. Cannot debate.")
 
-    # ── Challenge round: find flaws before revision ────────────────────────
+    # ─�� Challenge round: find flaws before revision ───────────���────────────
     _progress("🔍 Challenge round: \"Find something wrong. No, really. We insist.\"")
     challenges_by_model = {}
     challenge_tasks = []
@@ -114,7 +571,7 @@ async def run_debate(
             _update_cost(cost, result)
             model_status[short] = f"✅ CH:{result['latency_s']}s"
 
-    # ── Debate rounds with convergence check ───────────────────────────────
+    # ── Debate rounds with convergence check ─────────────────��─────────────
     round_messages = [
         "⚔️  Round {n}: Models read the challenges. Egos bruised. Revising...",
         "🔄 Round {n}: \"Actually, you make a fair point...\" (or not)",
@@ -140,7 +597,6 @@ async def run_debate(
 
             # First revision round: include challenges
             if round_num == 1 and challenges_by_model:
-                # Gather challenges OF this model (from others)
                 relevant_challenges = {
                     k: v for k, v in challenges_by_model.items() if k != model.name
                 }
@@ -185,7 +641,7 @@ async def run_debate(
         else:
             _progress(f"   📊 Agreement: {agreement['score']:.0%} — still fighting.")
 
-    # ── Final judgment ─────────────────────────────────────────────────────
+    # ── Final judgment ───��─────────────────────────────���───────────────────
     _progress("⚖️  Judge enters the room. Reviewing all arguments...")
     aggregator = get_aggregator(prefer_premium=True)
     elapsed = int((time.monotonic() - start) * 1000)
@@ -226,7 +682,14 @@ async def run_debate(
     }
 
 
-# ── Display width helpers for battle card ──────────────────────────────────────
+# ═���════════════════════════════════════════════════════════════════════════════
+#  HELPERS
+# ═════���════════════════════════════════════════════════════════════════════════
+
+def _short_name(model: ModelConfig) -> str:
+    """Extract short model name from full LiteLLM identifier."""
+    return model.name.split("/")[-1] if "/" in model.name else model.name
+
 
 def _dw(s: str) -> int:
     """Terminal display width — handles emoji vs ASCII correctly."""
@@ -234,8 +697,6 @@ def _dw(s: str) -> int:
     for i, c in enumerate(s):
         cp = ord(c)
         if cp == 0xFE0F:
-            # VS16 forces emoji presentation — preceding char renders as width 2.
-            # We already counted it as 1, so add 1 to upgrade.
             w += 1
             continue
         eaw = unicodedata.east_asian_width(c)
@@ -246,6 +707,41 @@ def _dw(s: str) -> int:
     return w
 
 
+def _render_battle_card(on_progress: Callable, angel_short: str, devil_short: str):
+    """Render the adversarial debate battle card."""
+    _label_advocate = f"Advocate: {angel_short}"
+    _label_critic   = f"Critic:   {devil_short}"
+    _adv_content = f"  👼 {_label_advocate}"
+    _crt_content = f"  😈 {_label_critic}"
+    _title_text  = "⚔️  ADVERSARIAL DEBATE  ⚔️"
+    _quote       = '"Let them fight."'
+    _quote_content = f"  {_quote}"
+    _inner = max(_dw(_adv_content), _dw(_crt_content), _dw(_title_text), _dw(_quote_content)) + 4
+    _top    = "╔" + "═" * _inner + "╗"
+    _bottom = "╚" + "═" * _inner + "╝"
+    _blank  = "║" + " " * _inner + "║"
+
+    def _pad_line(content: str) -> str:
+        return "║" + content + " " * (_inner - _dw(content)) + "║"
+
+    def _center_line(content: str) -> str:
+        pad = _inner - _dw(content)
+        left = pad // 2
+        right = pad - left
+        return "║" + " " * left + content + " " * right + "║"
+
+    on_progress(
+        f"{_top}\n"
+        f"{_center_line(_title_text)}\n"
+        f"{_blank}\n"
+        f"{_pad_line(_adv_content)}\n"
+        f"{_pad_line(_crt_content)}\n"
+        f"{_blank}\n"
+        f"{_center_line(_quote_content)}\n"
+        f"{_bottom}"
+    )
+
+
 # ── Best sentence extraction for debate previews ──────────────────────────────
 
 _SKIP_PREFIXES = (
@@ -254,7 +750,6 @@ _SKIP_PREFIXES = (
     "this is a", "here's my", "my argument", "i'm going to",
     "opening argument", "the evidence strongly", "the strongest argument",
 )
-# Signals of a meaty, specific sentence worth showing
 _SPECIFICITY_SIGNALS = [
     "%", "$", "study", "research", "data", "evidence", "found that",
     "showed", "according", "published", "trial", "patients", "users",
@@ -265,9 +760,7 @@ _SPECIFICITY_SIGNALS = [
 
 def _best_sentence(text: str) -> str:
     """Find the most specific, interesting sentence — not the opening."""
-    # Split on sentence boundaries
     sentences = re.split(r'(?<=[.!?])\s+', text.replace("\n", " ").strip())
-    # Score each sentence by specificity
     scored = []
     for s in sentences:
         stripped = s.strip().lstrip("#*-– ")
@@ -276,404 +769,18 @@ def _best_sentence(text: str) -> str:
         lower = stripped.lower()
         if lower.startswith(_SKIP_PREFIXES):
             continue
-        # Score: more specificity signals = more interesting
         score = sum(1 for sig in _SPECIFICITY_SIGNALS if sig in lower)
-        # Bonus for numbers (specific data)
         score += len(re.findall(r'\d+', stripped))
         scored.append((score, stripped))
     if not scored:
-        # Fallback to first non-preamble sentence
         for s in sentences:
             stripped = s.strip().lstrip("#*-– ")
             if len(stripped) >= 20 and not stripped.lower().startswith(_SKIP_PREFIXES):
                 return stripped[:200]
         return text.replace("\n", " ").strip()[:150]
-    # Return the highest-scored sentence
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored[0][1][:200]
 
 
 def _word_count(text: str) -> int:
     return len(text.split())
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  ADVERSARIAL DEBATE — Angel/Devil/Judge
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def _run_adversarial_debate(
-    query: str,
-    rounds: int = 2,
-    tier_name: str = "pro",
-    on_progress: Optional[Callable] = None,
-    template_name: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Angel/Devil/Judge debate: one model argues FOR, one AGAINST, judge synthesizes."""
-    _progress = on_progress or (lambda msg: None)
-
-    # ── Template resolution ───────────────────────────────────────────────
-    from .templates import get_template, detect_template, DecisionTemplate
-    template: Optional[DecisionTemplate] = None
-    if template_name:
-        template = get_template(template_name)
-        if template:
-            _progress(f"📋 Using '{template.name}' template: {template.description}")
-        else:
-            _progress(f"⚠️  Unknown template '{template_name}' — running without template")
-    else:
-        template = detect_template(query)
-        if template:
-            _progress(f"💡 Auto-detected '{template.name}' template — using domain framing")
-    tier = TIERS.get(tier_name)
-    if not tier:
-        raise ValueError(f"Unknown tier: {tier_name}")
-
-    # For adversarial debate, use the STRONGEST HEALTHY models across ALL tiers.
-    # Skip models with open circuit breakers — they'll just waste time.
-    from .models import available_models as get_all_available
-    from .health import should_skip
-    all_available = get_all_available()
-    # Filter out circuit-broken models, then rank by capability
-    healthy = [m for m in all_available if not should_skip(m.name)]
-    if len(healthy) < 2:
-        # Fall back to all available if not enough healthy ones
-        healthy = all_available
-    if len(healthy) < 2:
-        raise RuntimeError("Adversarial debate requires at least 2 available models.")
-
-    # Sort by capability (output cost as proxy) — most expensive = strongest
-    ranked = sorted(healthy, key=lambda m: m.output_cost_per_mtok, reverse=True)
-    angel_model = ranked[0]
-    # Devil must be from a DIFFERENT provider for genuine diversity
-    devil_model = next(
-        (m for m in ranked[1:] if m.provider != angel_model.provider),
-        ranked[1],
-    )
-    # Log if we downgraded from the top models
-    all_ranked = sorted(all_available, key=lambda m: m.output_cost_per_mtok, reverse=True)
-    if all_ranked[0].name != angel_model.name or (len(all_ranked) > 1 and all_ranked[1].name != devil_model.name):
-        skipped_names = [m.name.split("/")[-1] for m in all_ranked if should_skip(m.name)]
-        if skipped_names:
-            _progress(f"⚡ Skipping unhealthy models: {', '.join(skipped_names)}")
-    cost = QueryCost(tier=f"adversarial-{tier_name}")
-    start = time.monotonic()
-    all_rounds = []
-    model_status = {}
-    converged_at = None
-
-    angel_short = angel_model.name.split("/")[-1] if "/" in angel_model.name else angel_model.name
-    devil_short = devil_model.name.split("/")[-1] if "/" in devil_model.name else devil_model.name
-
-    # ── Round 0: Independent positions ─────────────────────────────────────
-    _label_advocate = f"Advocate: {angel_short}"
-    _label_critic   = f"Critic:   {devil_short}"
-    # inner width in display columns (content area between borders)
-    _adv_content = f"  👼 {_label_advocate}"
-    _crt_content = f"  😈 {_label_critic}"
-    _title_text  = "⚔️  ADVERSARIAL DEBATE  ⚔️"
-    _quote       = '"Let them fight."'
-    _quote_content = f"  {_quote}"
-    _inner = max(_dw(_adv_content), _dw(_crt_content), _dw(_title_text), _dw(_quote_content)) + 4
-    _top    = "╔" + "═" * _inner + "╗"
-    _bottom = "╚" + "═" * _inner + "╝"
-    _blank  = "║" + " " * _inner + "║"
-    # Pad each line: (inner - display_width) spaces after content
-    def _pad_line(content: str) -> str:
-        return "║" + content + " " * (_inner - _dw(content)) + "║"
-    def _center_line(content: str) -> str:
-        pad = _inner - _dw(content)
-        left = pad // 2
-        right = pad - left
-        return "║" + " " * left + content + " " * right + "║"
-    _progress(
-        f"{_top}\n"
-        f"{_center_line(_title_text)}\n"
-        f"{_blank}\n"
-        f"{_pad_line(_adv_content)}\n"
-        f"{_pad_line(_crt_content)}\n"
-        f"{_blank}\n"
-        f"{_center_line(_quote_content)}\n"
-        f"{_bottom}"
-    )
-    # ── Research phase: ground the debate in real sources ────────────────
-    # Use all available providers (Firecrawl + DuckDuckGo) with fallback chain
-    research_context = ""
-    try:
-        from .research import get_all_providers, format_research_context
-        providers = get_all_providers()
-        if providers:
-            provider_names = [type(p).__name__.replace("Provider", "") for p in providers]
-            _progress(f"🔍 Researching both sides ({' → '.join(provider_names)})...")
-            all_results: list = []
-            seen_urls: set = set()
-            # Search pro/con angles across all providers
-            search_queries = [
-                query,
-                f"arguments for {query}",
-                f"arguments against {query}",
-                f"{query} evidence research data",
-            ]
-            # Add template-specific research queries
-            if template:
-                search_queries.extend(template.research_queries)
-            for provider in providers:
-                for sq in search_queries:
-                    try:
-                        results = await provider.search(sq, max_results=3)
-                        for r in results:
-                            if r.url and r.url not in seen_urls:
-                                seen_urls.add(r.url)
-                                all_results.append(r)
-                    except Exception:
-                        continue
-                # If first provider got enough, skip supplementing
-                if len(all_results) >= 6:
-                    break
-            if all_results:
-                from .config import RESEARCH_CONTEXT_MAX_CHARS_DEEP
-                research_context = format_research_context(all_results, max_chars=RESEARCH_CONTEXT_MAX_CHARS_DEEP)
-            if research_context:
-                source_count = research_context.count("Source: http")
-                _progress(f"📚 Found {source_count} sources — both sides will cite real evidence")
-            else:
-                _progress("📚 No research results — debating from training data")
-    except Exception:
-        pass  # research is best-effort, debate continues without it
-
-    # Inject template context + research into prompts
-    angel_system = DEBATE_ANGEL_SYSTEM.format(previous_round="This is your opening argument.")
-    devil_system = DEBATE_DEVIL_SYSTEM.format(previous_round="This is your opening argument.")
-    # Template: light context for debaters (what kind of decision, not what to argue)
-    if template:
-        angel_system += f"\n\nDecision context: {template.debater_context}"
-        devil_system += f"\n\nDecision context: {template.debater_context}"
-    if research_context:
-        cite_instruction = "\n\nCite specific sources from the research when making claims. Reference data, studies, or examples by name."
-        angel_system += f"\n\n{research_context}{cite_instruction}"
-        devil_system += f"\n\n{research_context}{cite_instruction}"
-
-    _progress("__FIGHT_START__")
-    angel_task = call_model(angel_model, [
-        {"role": "system", "content": angel_system},
-        {"role": "user", "content": query},
-    ], timeout=DEBATE_TIMEOUT_SECONDS)
-    devil_task = call_model(devil_model, [
-        {"role": "system", "content": devil_system},
-        {"role": "user", "content": query},
-    ], timeout=DEBATE_TIMEOUT_SECONDS)
-
-    angel_r, devil_r = await asyncio.gather(angel_task, devil_task)
-    _progress("__FIGHT_STOP__")
-
-    angel_pos = angel_r["content"] if angel_r else ""
-    devil_pos = devil_r["content"] if devil_r else ""
-
-    if angel_r:
-        _update_cost(cost, angel_r)
-        model_status[f"👼 {angel_short}"] = f"✅ R0:{angel_r['latency_s']}s"
-    else:
-        model_status[f"👼 {angel_short}"] = "❌ failed R0"
-    if devil_r:
-        _update_cost(cost, devil_r)
-        model_status[f"😈 {devil_short}"] = f"✅ R0:{devil_r['latency_s']}s"
-    else:
-        model_status[f"😈 {devil_short}"] = "❌ failed R0"
-
-    # If one side failed, try fallback models
-    if not angel_pos or not devil_pos:
-        remaining = [m for m in ranked[2:] if m.available] if len(ranked) > 2 else []
-        if not angel_pos and remaining:
-            angel_model = remaining[0]
-            angel_short = angel_model.name.split("/")[-1] if "/" in angel_model.name else angel_model.name
-            fb = await call_model(angel_model, [
-                {"role": "system", "content": DEBATE_ANGEL_SYSTEM.format(previous_round="This is your opening argument.")},
-                {"role": "user", "content": query},
-            ])
-            if fb:
-                angel_pos = fb["content"]
-                _update_cost(cost, fb)
-                model_status[f"👼 {angel_short}"] = f"✅ R0:{fb['latency_s']}s (fallback)"
-        if not devil_pos and remaining:
-            fb_model = remaining[-1] if len(remaining) > 1 else remaining[0]
-            devil_short_fb = fb_model.name.split("/")[-1] if "/" in fb_model.name else fb_model.name
-            if fb_model.name != angel_model.name if not angel_pos else True:
-                fb = await call_model(fb_model, [
-                    {"role": "system", "content": DEBATE_DEVIL_SYSTEM.format(previous_round="This is your opening argument.")},
-                    {"role": "user", "content": query},
-                ])
-                if fb:
-                    devil_pos = fb["content"]
-                    devil_model = fb_model
-                    devil_short = devil_short_fb
-                    _update_cost(cost, fb)
-                    model_status[f"😈 {devil_short}"] = f"✅ R0:{fb['latency_s']}s (fallback)"
-
-    if not angel_pos or not devil_pos:
-        raise RuntimeError(
-            "Adversarial debate requires 2 responding models. "
-            "Available models may be rate-limited or unavailable."
-        )
-
-    all_rounds.append({"angel": angel_pos, "devil": devil_pos})
-
-    angel_thesis = _best_sentence(angel_pos)
-    devil_thesis = _best_sentence(devil_pos)
-    _progress(f"\n   👼 ADVOCATE opens:")
-    _progress(f"   │ \"{angel_thesis}\"")
-    _progress(f"   │ ({_word_count(angel_pos)} words)")
-    _progress(f"\n   😈 CRITIC opens:")
-    _progress(f"   │ \"{devil_thesis}\"")
-    _progress(f"   │ ({_word_count(devil_pos)} words)")
-
-    # ── Debate rounds with auto-extension ──────────────────────────────────
-    prev_agreement_score = compute_agreement([angel_pos, devil_pos])["score"]
-    _progress(f"\n   📊 Opening agreement: {prev_agreement_score:.0%}")
-
-    adversarial_round_msgs = [
-        "⚔️  Round {n}: They've read each other's arguments. Gloves are off.",
-        "🔥 Round {n}: \"That's your best argument?\" Both sides revising...",
-        "💥 Round {n}: Neither is backing down. Sharpening positions...",
-        "🗡️  Round {n}: Going for the jugular...",
-        "🌪️  Round {n}: The debate intensifies...",
-    ]
-    max_rounds = rounds + 2  # allow up to 2 auto-extensions
-    round_num = 0
-    while round_num < max_rounds:
-        round_num += 1
-        msg = adversarial_round_msgs[(round_num - 1) % len(adversarial_round_msgs)].format(n=round_num)
-        _progress(f"\n{msg}")
-        _progress("__FIGHT_START__")
-        _angel_rev_sys = DEBATE_ANGEL_SYSTEM.format(
-            previous_round=f"The Critic's argument:\n{devil_pos}"
-        )
-        _devil_rev_sys = DEBATE_DEVIL_SYSTEM.format(
-            previous_round=f"The Advocate's argument:\n{angel_pos}"
-        )
-        if template:
-            _angel_rev_sys += f"\n\nDecision context: {template.debater_context}"
-            _devil_rev_sys += f"\n\nDecision context: {template.debater_context}"
-        if research_context:
-            _angel_rev_sys += f"\n\n{research_context}\n\nCite specific sources when making claims."
-            _devil_rev_sys += f"\n\n{research_context}\n\nCite specific sources when making claims."
-        angel_task = call_model(angel_model, [
-            {"role": "system", "content": _angel_rev_sys},
-            {"role": "user", "content": query},
-        ], timeout=DEBATE_TIMEOUT_SECONDS)
-        devil_task = call_model(devil_model, [
-            {"role": "system", "content": _devil_rev_sys},
-            {"role": "user", "content": query},
-        ], timeout=DEBATE_TIMEOUT_SECONDS)
-
-        angel_r, devil_r = await asyncio.gather(angel_task, devil_task)
-        _progress("__FIGHT_STOP__")
-
-        if angel_r:
-            angel_pos = angel_r["content"]
-            _update_cost(cost, angel_r)
-            model_status[f"👼 {angel_short}"] = f"✅ R{round_num}:{angel_r['latency_s']}s"
-        if devil_r:
-            devil_pos = devil_r["content"]
-            _update_cost(cost, devil_r)
-            model_status[f"😈 {devil_short}"] = f"✅ R{round_num}:{devil_r['latency_s']}s"
-
-        all_rounds.append({"angel": angel_pos, "devil": devil_pos})
-
-        # Show how positions evolved — thesis, not a wall of text
-        angel_rev = _best_sentence(angel_pos)
-        devil_rev = _best_sentence(devil_pos)
-        _progress(f"   👼 \"{angel_rev}\"")
-        _progress(f"   😈 \"{devil_rev}\"")
-
-        # Convergence check with momentum detection
-        agreement = compute_agreement([angel_pos, devil_pos])
-        score = agreement["score"]
-        delta = abs(score - prev_agreement_score)
-
-        # Visual agreement bar
-        filled = int(score * 20)
-        bar = "█" * filled + "░" * (20 - filled)
-        _progress(f"   [{bar}] {score:.0%} agreement")
-
-        if score > 0.7:
-            converged_at = round_num
-            _progress(f"   🤝 They're... agreeing? Debate over.")
-            break
-        elif round_num >= rounds and delta < 0.03:
-            # Positions ossified — no point continuing
-            _progress(f"   🪨 Positions hardened (Δ{delta:.0%}). Neither will budge.")
-            break
-        elif round_num >= rounds and delta >= 0.03 and round_num < max_rounds:
-            # Still shifting — auto-extend
-            _progress(f"   🔄 Still shifting (Δ{delta:.0%}) — extending debate...")
-        elif round_num >= max_rounds:
-            _progress(f"   ⏰ Max rounds reached.")
-            break
-
-        prev_agreement_score = score
-
-    # ── Final judgment ─────────────────────────────────────────────────────
-    total_rounds = len(all_rounds) - 1  # subtract opening
-    _progress(f"\n{'─' * 40}")
-    _progress(f"⚖️  JUDGE ENTERS ({total_rounds} rounds of testimony)")
-    _progress(f"{'─' * 40}")
-    aggregator = get_aggregator(prefer_premium=True)
-    elapsed = int((time.monotonic() - start) * 1000)
-
-    if not aggregator:
-        return {
-            "response": f"**Advocate:**\n{angel_pos}\n\n---\n\n**Critic:**\n{devil_pos}",
-            "rounds": all_rounds, "model_status": model_status,
-            "cost": cost, "latency_ms": elapsed, "converged_at": converged_at,
-        }
-
-    _progress("__JUDGE_START__")
-    _judge_system = DEBATE_ADVERSARIAL_JUDGE_SYSTEM.format(
-        angel_position=angel_pos, devil_position=devil_pos
-    )
-    # Template: full structured criteria for the judge
-    if template:
-        _judge_system += f"\n\n{template.judge_addendum}"
-    if research_context:
-        _judge_system += (
-            "\n\nThe following research was provided to both sides. "
-            "Verify that cited claims match the sources. Flag any claims "
-            "that aren't supported by the research.\n\n" + research_context
-        )
-    judge_result = await call_model(
-        aggregator,
-        [
-            {"role": "system", "content": _judge_system},
-            {"role": "user", "content": query},
-        ],
-        temperature=0.1,
-        timeout=AGGREGATOR_TIMEOUT_SECONDS,
-    )
-    _progress("__JUDGE_STOP__")
-
-    elapsed = int((time.monotonic() - start) * 1000)
-    if judge_result:
-        _update_cost(cost, judge_result, is_aggregator=True)
-
-    # Extract source URLs from research context
-    research_sources = []
-    if research_context:
-        for line in research_context.split("\n"):
-            if line.startswith("Source: http"):
-                research_sources.append(line.replace("Source: ", "").strip())
-
-    return {
-        "response": judge_result["content"] if judge_result else angel_pos,
-        "rounds": all_rounds,
-        "model_status": model_status,
-        "cost": cost,
-        "latency_ms": elapsed,
-        "converged_at": converged_at,
-        "debate_style": "adversarial",
-        "research_grounded": bool(research_context),
-        "research_sources": research_sources,
-        "research_context": research_context,
-        "query": query,
-        "angel_model": angel_short,
-        "devil_model": devil_short,
-        "template": template.name if template else None,
-    }
