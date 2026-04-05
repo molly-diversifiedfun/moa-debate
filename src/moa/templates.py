@@ -10,7 +10,10 @@ evaluation (judge) outperforms structured argumentation (debaters).
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional
+
+import yaml
 
 
 @dataclass(frozen=True)
@@ -150,9 +153,65 @@ De-risk steps must include:
 ]
 
 
+# ── YAML template loading ─────────────────────────────────────────────────────
+
+_REQUIRED_FIELDS = {"name", "debater_context", "judge_addendum"}
+
+
+def _load_yaml_template(path: Path) -> Optional[DecisionTemplate]:
+    """Load a single YAML template file. Returns None on validation failure."""
+    try:
+        data = yaml.safe_load(path.read_text())
+        if not isinstance(data, dict):
+            return None
+        missing = _REQUIRED_FIELDS - set(data.keys())
+        if missing:
+            return None
+        return DecisionTemplate(
+            name=data["name"],
+            description=data.get("description", ""),
+            keywords=data.get("keywords", []),
+            debater_context=data["debater_context"],
+            judge_addendum=data["judge_addendum"],
+            research_queries=data.get("research_queries", []),
+        )
+    except (yaml.YAMLError, OSError, KeyError, TypeError):
+        return None
+
+
+def load_custom_templates() -> List[DecisionTemplate]:
+    """Load all YAML templates from ~/.moa/templates/."""
+    from .config import MOA_HOME
+    templates_dir = MOA_HOME / "templates"
+    if not templates_dir.is_dir():
+        return []
+    custom = []
+    for path in sorted(templates_dir.glob("*.yaml")):
+        t = _load_yaml_template(path)
+        if t is not None:
+            custom.append(t)
+    for path in sorted(templates_dir.glob("*.yml")):
+        t = _load_yaml_template(path)
+        if t is not None:
+            custom.append(t)
+    return custom
+
+
+def _all_templates() -> List[DecisionTemplate]:
+    """Return all templates: custom (priority) + built-in (fallback).
+
+    Custom templates with the same name as a built-in override it.
+    """
+    custom = load_custom_templates()
+    custom_names = {t.name for t in custom}
+    # Built-ins that aren't overridden
+    builtins = [t for t in TEMPLATES if t.name not in custom_names]
+    return custom + builtins
+
+
 def get_template(name: str) -> Optional[DecisionTemplate]:
-    """Look up a template by exact name."""
-    for t in TEMPLATES:
+    """Look up a template by exact name. Custom templates take priority."""
+    for t in _all_templates():
         if t.name == name:
             return t
     return None
@@ -163,15 +222,45 @@ def detect_template(query: str) -> Optional[DecisionTemplate]:
     query_lower = query.lower()
     best_match = None
     best_score = 0
-    for t in TEMPLATES:
+    for t in _all_templates():
         score = sum(1 for kw in t.keywords if kw in query_lower)
         if score > best_score:
             best_score = score
             best_match = t
-    # Require at least 1 keyword match
     return best_match if best_score >= 1 else None
 
 
 def list_templates() -> List[DecisionTemplate]:
     """Return all available templates."""
-    return list(TEMPLATES)
+    return _all_templates()
+
+
+def validate_template_file(path: Path) -> tuple:
+    """Validate a YAML template file. Returns (ok: bool, errors: list[str])."""
+    errors = []
+    try:
+        data = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as e:
+        return False, [f"Invalid YAML: {e}"]
+    except OSError as e:
+        return False, [f"Cannot read file: {e}"]
+
+    if not isinstance(data, dict):
+        return False, ["File must contain a YAML mapping (key: value pairs)"]
+
+    missing = _REQUIRED_FIELDS - set(data.keys())
+    if missing:
+        errors.append(f"Missing required fields: {', '.join(sorted(missing))}")
+
+    known = {"name", "description", "keywords", "debater_context", "judge_addendum", "research_queries"}
+    unknown = set(data.keys()) - known
+    if unknown:
+        errors.append(f"Unknown fields (ignored): {', '.join(sorted(unknown))}")
+
+    if "keywords" in data and not isinstance(data["keywords"], list):
+        errors.append("'keywords' must be a list")
+
+    if "research_queries" in data and not isinstance(data["research_queries"], list):
+        errors.append("'research_queries' must be a list")
+
+    return len(errors) == 0 or all("Unknown" in e for e in errors), errors

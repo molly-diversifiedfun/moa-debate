@@ -829,23 +829,52 @@ def _write_debate_transcript(result: dict, query: str, rounds: int, style: str):
 
 
 @app.command()
-def templates():
-    """List available decision templates for debates."""
-    from .templates import list_templates
+def templates(
+    validate: Optional[str] = typer.Argument(None, help="Path to a YAML template to validate"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show keywords and research queries"),
+):
+    """List available decision templates, or validate a YAML template file."""
+    if validate:
+        from pathlib import Path
+        from .templates import validate_template_file
+        path = Path(validate)
+        ok, errors = validate_template_file(path)
+        if ok:
+            console.print(f"[bold green]✅ Valid template: {path.name}[/bold green]")
+            if errors:  # warnings only
+                for e in errors:
+                    console.print(f"[yellow]  ⚠ {e}[/yellow]")
+        else:
+            console.print(f"[bold red]❌ Invalid template: {path.name}[/bold red]")
+            for e in errors:
+                console.print(f"[red]  • {e}[/red]")
+        return
+
+    from .templates import list_templates, load_custom_templates, TEMPLATES
+
+    custom_names = {t.name for t in load_custom_templates()}
 
     table = Table(title="Decision Templates")
     table.add_column("Template", style="bold cyan")
+    table.add_column("Source", style="dim")
     table.add_column("Description")
-    table.add_column("Keywords", style="dim")
+    if verbose:
+        table.add_column("Keywords", style="dim")
     table.add_column("Usage", style="green")
 
     for t in list_templates():
+        source = "custom" if t.name in custom_names else "built-in"
         keywords = ", ".join(t.keywords[:5]) + ("..." if len(t.keywords) > 5 else "")
         usage = f'moa debate --template {t.name} "..."'
-        table.add_row(t.name, t.description, keywords, usage)
+        row = [t.name, source, t.description]
+        if verbose:
+            row.append(keywords)
+        row.append(usage)
+        table.add_row(*row)
 
     console.print(table)
     console.print("\n[dim]Templates auto-detect from query keywords if --template is not specified.[/dim]")
+    console.print("[dim]Custom templates: ~/.moa/templates/*.yaml (override built-ins by name)[/dim]")
 
 
 @app.command()
