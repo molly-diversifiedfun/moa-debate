@@ -67,9 +67,12 @@ def test_format_research_context_includes_header():
 # ── get_search_provider ───────────────────────────────────────────────────────
 
 def test_get_search_provider_no_key(monkeypatch):
-    """Returns None when FIRECRAWL_API_KEY not set."""
+    """Falls back to DuckDuckGo when FIRECRAWL_API_KEY not set."""
     monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
-    assert get_search_provider() is None
+    from moa.research import DuckDuckGoProvider
+    provider = get_search_provider()
+    # Should fall back to DuckDuckGo (free, no key needed)
+    assert isinstance(provider, DuckDuckGoProvider)
 
 
 def test_get_search_provider_with_key(monkeypatch):

@@ -87,14 +87,65 @@ class FirecrawlProvider:
             return ""
 
 
+# ── DuckDuckGo implementation (free, no API key) ────────────────────────────
+
+class DuckDuckGoProvider:
+    """SearchProvider backed by DuckDuckGo (ddgs package). Free, no key needed."""
+
+    async def search(self, query: str, max_results: int = 3) -> List[SearchResult]:
+        """Search via DuckDuckGo. Returns results with snippet (no full content)."""
+        loop = asyncio.get_event_loop()
+        try:
+            def _search():
+                from ddgs import DDGS
+                return list(DDGS().text(query, max_results=max_results))
+
+            raw = await loop.run_in_executor(None, _search)
+        except Exception:
+            return []
+
+        results = []
+        for r in raw:
+            results.append(SearchResult(
+                url=r.get("href", ""),
+                title=r.get("title", ""),
+                snippet=r.get("body", ""),
+                content=r.get("body", ""),  # DDG only gives snippets, not full pages
+            ))
+        return results
+
+    async def extract(self, url: str) -> str:
+        """DuckDuckGo can't extract pages — return empty."""
+        return ""
+
+
 # ── Provider factory ──────────────────────────────────────────────────────────
 
 def get_search_provider() -> Optional[SearchProvider]:
-    """Return configured search provider, or None if no API key."""
-    api_key = os.environ.get("FIRECRAWL_API_KEY")
-    if not api_key:
+    """Return best available search provider. Firecrawl > DuckDuckGo > None."""
+    firecrawl_key = os.environ.get("FIRECRAWL_API_KEY")
+    if firecrawl_key:
+        return FirecrawlProvider(firecrawl_key)
+    # DuckDuckGo is free — always available as fallback
+    try:
+        import ddgs  # noqa: check if installed
+        return DuckDuckGoProvider()
+    except ImportError:
         return None
-    return FirecrawlProvider(api_key)
+
+
+def get_all_providers() -> List[SearchProvider]:
+    """Return all available search providers for supplementing results."""
+    providers = []
+    firecrawl_key = os.environ.get("FIRECRAWL_API_KEY")
+    if firecrawl_key:
+        providers.append(FirecrawlProvider(firecrawl_key))
+    try:
+        import ddgs  # noqa
+        providers.append(DuckDuckGoProvider())
+    except ImportError:
+        pass
+    return providers
 
 
 # ── Search query derivation ──────────────────────────────────────────────────

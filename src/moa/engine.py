@@ -1425,37 +1425,39 @@ async def _run_adversarial_debate(
         f"{_bottom}"
     )
     # ── Research phase: ground the debate in real sources ────────────────
-    # Search both sides of the argument for balanced evidence
+    # Use all available providers (Firecrawl + DuckDuckGo) with fallback chain
     research_context = ""
     try:
-        from .research import get_search_provider, format_research_context, SearchResult
-        provider = get_search_provider()
-        if provider:
-            _progress("🔍 Researching both sides of the debate...")
+        from .research import get_all_providers, format_research_context
+        providers = get_all_providers()
+        if providers:
+            provider_names = [type(p).__name__.replace("Provider", "") for p in providers]
+            _progress(f"🔍 Researching both sides ({' → '.join(provider_names)})...")
             all_results: list = []
-            # Search the topic itself + explicit pro/con angles
+            seen_urls: set = set()
+            # Search pro/con angles across all providers
             search_queries = [
                 query,
                 f"arguments for {query}",
                 f"arguments against {query}",
                 f"{query} evidence research data",
             ]
-            for sq in search_queries:
-                try:
-                    results = await provider.search(sq, max_results=2)
-                    all_results.extend(results)
-                except Exception:
-                    continue
-            # Deduplicate by URL
-            seen_urls: set = set()
-            unique = []
-            for r in all_results:
-                if r.url not in seen_urls:
-                    seen_urls.add(r.url)
-                    unique.append(r)
-            if unique:
+            for provider in providers:
+                for sq in search_queries:
+                    try:
+                        results = await provider.search(sq, max_results=3)
+                        for r in results:
+                            if r.url and r.url not in seen_urls:
+                                seen_urls.add(r.url)
+                                all_results.append(r)
+                    except Exception:
+                        continue
+                # If first provider got enough, skip supplementing
+                if len(all_results) >= 6:
+                    break
+            if all_results:
                 from .config import RESEARCH_CONTEXT_MAX_CHARS_DEEP
-                research_context = format_research_context(unique, max_chars=RESEARCH_CONTEXT_MAX_CHARS_DEEP)
+                research_context = format_research_context(all_results, max_chars=RESEARCH_CONTEXT_MAX_CHARS_DEEP)
             if research_context:
                 source_count = research_context.count("Source: http")
                 _progress(f"📚 Found {source_count} sources — both sides will cite real evidence")
