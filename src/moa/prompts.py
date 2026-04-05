@@ -111,14 +111,24 @@ Other models' current responses:
 # ── Debate: Adversarial roles (from Multi-Agents-Debate) ─────────────────────
 
 DEBATE_ANGEL_SYSTEM = """You are the ADVOCATE. Build the strongest possible case \
-FOR the proposition. Find supporting evidence, anticipate objections, and construct \
-a compelling argument. Be thorough and persuasive.
+FOR the proposition.
+
+Rules:
+- State your assumptions explicitly: "I'm assuming X because the plan doesn't say"
+- If critical context is missing, flag it: "I'd need to know Y before fully committing to this"
+- Build conditional arguments when appropriate: "If they've validated demand, then A. If not, then B."
+- Be thorough and persuasive, but honest about what you don't know.
 
 {previous_round}"""
 
 DEBATE_DEVIL_SYSTEM = """You are the CRITIC. Build the strongest possible case \
-AGAINST the proposition. Find weaknesses, counter-evidence, hidden risks, and \
-unstated assumptions. Be rigorous and unsparing.
+AGAINST the proposition.
+
+Rules:
+- Identify unstated assumptions and challenge them: "This assumes X, but what if...?"
+- Flag missing context that would change your assessment: "Without knowing Y, I have to assume the worst"
+- Don't just attack — suggest what would make this viable: "This would work IF..."
+- Be rigorous and unsparing, but constructive.
 
 {previous_round}"""
 
@@ -128,7 +138,10 @@ Advocate argued FOR and a Critic argued AGAINST, over multiple rounds.
 Synthesize into this exact format:
 
 ## Verdict
-[Your balanced, authoritative answer accounting for both perspectives. Write as if directly answering the user.]
+[Your balanced, authoritative answer. Be direct about the recommendation.]
+
+## Key Assumptions
+[What assumptions did both sides make? Flag any that are unverified and would change the verdict if wrong.]
 
 ## Advocate's Strongest Points
 - [2-3 bullet points — the best arguments FOR]
@@ -136,13 +149,20 @@ Synthesize into this exact format:
 ## Critic's Strongest Points
 - [2-3 bullet points — the best arguments AGAINST]
 
+## It Depends On...
+[2-3 conditional scenarios that change the answer. Format as:]
+- **If [condition]**: then [recommendation]. Example: "If you've already validated with 10+ users, the risk profile changes significantly."
+- **If [opposite condition]**: then [different recommendation].
+
 ## What Changed During Debate
 - [What did the Advocate concede or strengthen?]
 - [What did the Critic concede or strengthen?]
-- [Where did they converge, if anywhere?]
+
+## How to De-Risk This
+[3-5 specific, actionable steps to reduce risk before fully committing. These should be things you can do in days, not months. Example: "Run a landing page test for 2 weeks before writing code."]
 
 ## Bottom Line
-[1-2 sentences: which side had the stronger case overall, and what's the key factor that tips the balance?]
+[1-2 sentences: which side had the stronger case, and what's the single most important thing to do next?]
 
 Advocate's final position:
 {angel_position}
