@@ -611,54 +611,75 @@ def debate(
                 _anim_thread.join(timeout=1)
                 _anim_thread = None
 
-        def _debate_progress(msg):
+        def _debate_progress(event):
+            from .events import DebateEvent, EventType
             elapsed = int(_time.monotonic() - _debate_start)
             timestamp = f"[dim][{elapsed}s][/dim] "
 
-            # Animation control signals (not displayed)
-            if msg == "__FIGHT_START__":
-                _start_anim(_FIGHT_SCENES, _FIGHT_MSGS, speed=0.25)
-                return
-            elif msg == "__FIGHT_STOP__":
-                _stop_anim()
-                return
-            elif msg == "__JUDGE_START__":
-                _start_anim(_JUDGE_SCENES, _JUDGE_MSGS, speed=0.6)
-                return
-            elif msg == "__JUDGE_STOP__":
-                _stop_anim()
+            # ── Typed events (adversarial pipeline) ───────────────────────
+            if isinstance(event, DebateEvent):
+                t = event.type
+                msg = event.message
+
+                # Animation control (no display)
+                if t == EventType.FIGHT_START:
+                    _start_anim(_FIGHT_SCENES, _FIGHT_MSGS, speed=0.25)
+                    return
+                elif t == EventType.FIGHT_STOP:
+                    _stop_anim()
+                    return
+                elif t == EventType.JUDGE_START:
+                    _start_anim(_JUDGE_SCENES, _JUDGE_MSGS, speed=0.6)
+                    return
+                elif t == EventType.JUDGE_STOP:
+                    _stop_anim()
+                    return
+
+                # Use style hint from event, or type-specific defaults
+                style = event.style
+                if t == EventType.BATTLE_CARD:
+                    console.print(f"[bold cyan]{msg}[/bold cyan]")
+                elif t == EventType.JUDGE_ENTER:
+                    console.print(f"\n{timestamp}[bold yellow]{msg}[/bold yellow]")
+                elif t == EventType.ARGUMENT_PREVIEW:
+                    console.print(f"[white]{msg}[/white]")
+                elif t == EventType.AGREEMENT_BAR:
+                    console.print(f"{timestamp}[yellow]{msg}[/yellow]")
+                elif t == EventType.ROUND_START:
+                    console.print(f"{timestamp}[bold cyan]{msg}[/bold cyan]")
+                elif t == EventType.DEBATE_CONVERGED:
+                    console.print(f"{timestamp}[bold green]{msg}[/bold green]")
+                elif style:
+                    console.print(f"{timestamp}[{style}]{msg}[/{style}]")
+                else:
+                    console.print(f"{timestamp}[cyan]{msg}[/cyan]")
                 return
 
-            # Battle card box — no timestamp, bold cyan
+            # ── Legacy string events (peer debate) ────────────────────────
+            msg = event
+
             if "╔" in msg or "║" in msg or "╚" in msg:
                 console.print(f"[bold cyan]{msg}[/bold cyan]")
-            # Divider lines
             elif msg.strip().startswith("─"):
                 console.print(f"[dim]{msg}[/dim]")
-            # Agreement bar
             elif "█" in msg or "░" in msg:
                 console.print(f"{timestamp}[yellow]{msg}[/yellow]")
-            # Argument previews (quoted text from models)
             elif "│" in msg:
                 console.print(f"[white]{msg}[/white]")
             elif msg.strip().startswith("👼") or msg.strip().startswith("😈"):
                 console.print(f"{timestamp}[bold white]{msg}[/bold white]")
-            # Convergence / end states
             elif "🤝" in msg:
                 console.print(f"{timestamp}[bold green]{msg}[/bold green]")
             elif "🪨" in msg or "⏰" in msg:
                 console.print(f"{timestamp}[yellow]{msg}[/yellow]")
             elif "🔄 Still shifting" in msg:
                 console.print(f"{timestamp}[magenta]{msg}[/magenta]")
-            # Template and research phase
             elif "📋" in msg or "💡" in msg:
                 console.print(f"{timestamp}[bold magenta]{msg}[/bold magenta]")
             elif "🔍" in msg or "📚" in msg:
                 console.print(f"{timestamp}[bold blue]{msg}[/bold blue]")
-            # Judge entrance
             elif "JUDGE" in msg:
                 console.print(f"\n{timestamp}[bold yellow]{msg}[/bold yellow]")
-            # Round headers
             elif any(e in msg for e in ["⚔️", "🔥", "💥", "🗡️", "🌪️"]):
                 console.print(f"{timestamp}[bold cyan]{msg}[/bold cyan]")
             else:

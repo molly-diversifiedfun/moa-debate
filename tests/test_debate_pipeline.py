@@ -119,7 +119,7 @@ async def test_resolve_template_by_name():
     result = await resolve_template(state)
     assert result.template is not None
     assert result.template.name == "hire"
-    assert any("hire" in msg for msg in progress)
+    assert any("hire" in e.message for e in progress)
 
 
 @pytest.mark.asyncio
@@ -146,7 +146,7 @@ async def test_resolve_template_unknown_name():
     )
     result = await resolve_template(state)
     assert result.template is None
-    assert any("Unknown template" in msg for msg in progress)
+    assert any("Unknown template" in e.message for e in progress)
 
 
 # ── select_models stage ───────────────────────────────────────────────────────

@@ -26,6 +26,7 @@ from .prompts import (
     DEBATE_ANGEL_SYSTEM, DEBATE_DEVIL_SYSTEM, DEBATE_ADVERSARIAL_JUDGE_SYSTEM,
 )
 from .orchestrator import call_model, _check_budget_or_raise, _update_cost, compute_agreement
+from . import events as ev
 
 
 # ════════���═════════════════════════════════════════════════════════════════════
@@ -70,13 +71,13 @@ async def resolve_template(state: DebateState) -> DebateState:
     if state.template_name:
         state.template = get_template(state.template_name)
         if state.template:
-            state.on_progress(f"📋 Using '{state.template.name}' template: {state.template.description}")
+            state.on_progress(ev.template_resolved(state.template.name, state.template.description))
         else:
-            state.on_progress(f"⚠️  Unknown template '{state.template_name}' — running without template")
+            state.on_progress(ev.template_unknown(state.template_name))
     else:
         state.template = detect_template(state.query)
         if state.template:
-            state.on_progress(f"💡 Auto-detected '{state.template.name}' template — using domain framing")
+            state.on_progress(ev.template_resolved(state.template.name, state.template.description, auto_detected=True))
 
     return state
 
@@ -111,7 +112,7 @@ async def select_models(state: DebateState) -> DebateState:
     if all_ranked[0].name != state.angel_model.name or (len(all_ranked) > 1 and all_ranked[1].name != state.devil_model.name):
         skipped_names = [m.name.split("/")[-1] for m in all_ranked if should_skip(m.name)]
         if skipped_names:
-            state.on_progress(f"⚡ Skipping unhealthy models: {', '.join(skipped_names)}")
+            state.on_progress(ev.skipped_unhealthy(skipped_names))
 
     return state
 
@@ -122,11 +123,11 @@ async def research(state: DebateState) -> DebateState:
         from .research import get_all_providers, format_research_context
         providers = get_all_providers()
         if not providers:
-            state.on_progress("📚 No research providers — debating from training data")
+            state.on_progress(ev.research_unavailable())
             return state
 
         provider_names = [type(p).__name__.replace("Provider", "") for p in providers]
-        state.on_progress(f"🔍 Researching both sides ({' → '.join(provider_names)})...")
+        state.on_progress(ev.research_start(provider_names))
 
         all_results: list = []
         seen_urls: set = set()
@@ -156,11 +157,8 @@ async def research(state: DebateState) -> DebateState:
             from .config import RESEARCH_CONTEXT_MAX_CHARS_DEEP
             state.research_context = format_research_context(all_results, max_chars=RESEARCH_CONTEXT_MAX_CHARS_DEEP)
 
-        if state.research_context:
-            source_count = state.research_context.count("Source: http")
-            state.on_progress(f"📚 Found {source_count} sources — both sides will cite real evidence")
-        else:
-            state.on_progress("📚 No research results — debating from training data")
+        source_count = state.research_context.count("Source: http") if state.research_context else 0
+        state.on_progress(ev.research_complete(source_count))
     except Exception:
         pass  # research is best-effort
 
@@ -186,7 +184,7 @@ async def opening(state: DebateState) -> DebateState:
         angel_system += f"\n\n{state.research_context}{cite_instruction}"
         devil_system += f"\n\n{state.research_context}{cite_instruction}"
 
-    state.on_progress("__FIGHT_START__")
+    state.on_progress(ev.fight_start())
     angel_r, devil_r = await asyncio.gather(
         call_model(state.angel_model, [
             {"role": "system", "content": angel_system},
@@ -197,7 +195,7 @@ async def opening(state: DebateState) -> DebateState:
             {"role": "user", "content": state.query},
         ], timeout=DEBATE_TIMEOUT_SECONDS),
     )
-    state.on_progress("__FIGHT_STOP__")
+    state.on_progress(ev.fight_stop())
 
     state.angel_pos = angel_r["content"] if angel_r else ""
     state.devil_pos = devil_r["content"] if devil_r else ""
@@ -252,14 +250,8 @@ async def opening(state: DebateState) -> DebateState:
     state.all_rounds.append({"angel": state.angel_pos, "devil": state.devil_pos})
 
     # Show opening theses
-    angel_thesis = _best_sentence(state.angel_pos)
-    devil_thesis = _best_sentence(state.devil_pos)
-    state.on_progress(f"\n   👼 ADVOCATE opens:")
-    state.on_progress(f"   │ \"{angel_thesis}\"")
-    state.on_progress(f"   │ ({_word_count(state.angel_pos)} words)")
-    state.on_progress(f"\n   😈 CRITIC opens:")
-    state.on_progress(f"   │ \"{devil_thesis}\"")
-    state.on_progress(f"   │ ({_word_count(state.devil_pos)} words)")
+    state.on_progress(ev.argument_preview("angel", _best_sentence(state.angel_pos), _word_count(state.angel_pos)))
+    state.on_progress(ev.argument_preview("devil", _best_sentence(state.devil_pos), _word_count(state.devil_pos)))
 
     return state
 
@@ -270,7 +262,7 @@ async def rounds(state: DebateState) -> DebateState:
     devil_short = _short_name(state.devil_model)
 
     prev_agreement_score = compute_agreement([state.angel_pos, state.devil_pos])["score"]
-    state.on_progress(f"\n   📊 Opening agreement: {prev_agreement_score:.0%}")
+    state.on_progress(ev.opening_agreement(prev_agreement_score))
 
     round_msgs = [
         "⚔️  Round {n}: They've read each other's arguments. Gloves are off.",
@@ -284,8 +276,8 @@ async def rounds(state: DebateState) -> DebateState:
     while round_num < max_rounds:
         round_num += 1
         msg = round_msgs[(round_num - 1) % len(round_msgs)].format(n=round_num)
-        state.on_progress(f"\n{msg}")
-        state.on_progress("__FIGHT_START__")
+        state.on_progress(ev.round_start(round_num, msg))
+        state.on_progress(ev.fight_start())
 
         _angel_rev_sys = DEBATE_ANGEL_SYSTEM.format(
             previous_round=f"The Critic's argument:\n{state.devil_pos}"
@@ -310,7 +302,7 @@ async def rounds(state: DebateState) -> DebateState:
                 {"role": "user", "content": state.query},
             ], timeout=DEBATE_TIMEOUT_SECONDS),
         )
-        state.on_progress("__FIGHT_STOP__")
+        state.on_progress(ev.fight_stop())
 
         if angel_r:
             state.angel_pos = angel_r["content"]
@@ -324,29 +316,27 @@ async def rounds(state: DebateState) -> DebateState:
         state.all_rounds.append({"angel": state.angel_pos, "devil": state.devil_pos})
 
         # Show evolved theses
-        state.on_progress(f"   👼 \"{_best_sentence(state.angel_pos)}\"")
-        state.on_progress(f"   😈 \"{_best_sentence(state.devil_pos)}\"")
+        state.on_progress(ev.round_thesis("angel", _best_sentence(state.angel_pos)))
+        state.on_progress(ev.round_thesis("devil", _best_sentence(state.devil_pos)))
 
         # Convergence check with momentum detection
         agreement = compute_agreement([state.angel_pos, state.devil_pos])
         score = agreement["score"]
         delta = abs(score - prev_agreement_score)
 
-        filled = int(score * 20)
-        bar = "█" * filled + "░" * (20 - filled)
-        state.on_progress(f"   [{bar}] {score:.0%} agreement")
+        state.on_progress(ev.agreement_bar(score))
 
         if score > 0.7:
             state.converged_at = round_num
-            state.on_progress("   🤝 They're... agreeing? Debate over.")
+            state.on_progress(ev.converged(round_num))
             break
         elif round_num >= state.rounds and delta < 0.03:
-            state.on_progress(f"   🪨 Positions hardened (Δ{delta:.0%}). Neither will budge.")
+            state.on_progress(ev.hardened(delta))
             break
         elif round_num >= state.rounds and delta >= 0.03 and round_num < max_rounds:
-            state.on_progress(f"   🔄 Still shifting (Δ{delta:.0%}) — extending debate...")
+            state.on_progress(ev.extended(delta))
         elif round_num >= max_rounds:
-            state.on_progress("   ⏰ Max rounds reached.")
+            state.on_progress(ev.max_rounds())
             break
 
         prev_agreement_score = score
@@ -360,16 +350,14 @@ async def judge(state: DebateState) -> DebateState:
     devil_short = _short_name(state.devil_model)
     total_rounds = len(state.all_rounds) - 1
 
-    state.on_progress(f"\n{'─' * 40}")
-    state.on_progress(f"⚖️  JUDGE ENTERS ({total_rounds} rounds of testimony)")
-    state.on_progress(f"{'─' * 40}")
+    state.on_progress(ev.judge_enter(total_rounds))
 
     aggregator = get_aggregator(prefer_premium=True)
     if not aggregator:
         state.judge_response = f"**Advocate:**\n{state.angel_pos}\n\n---\n\n**Critic:**\n{state.devil_pos}"
         return state
 
-    state.on_progress("__JUDGE_START__")
+    state.on_progress(ev.judge_start())
     _judge_system = DEBATE_ADVERSARIAL_JUDGE_SYSTEM.format(
         angel_position=state.angel_pos, devil_position=state.devil_pos
     )
@@ -391,7 +379,7 @@ async def judge(state: DebateState) -> DebateState:
         temperature=0.1,
         timeout=AGGREGATOR_TIMEOUT_SECONDS,
     )
-    state.on_progress("__JUDGE_STOP__")
+    state.on_progress(ev.judge_stop())
 
     if judge_result:
         _update_cost(state.cost, judge_result, is_aggregator=True)
