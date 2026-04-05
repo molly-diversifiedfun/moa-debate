@@ -457,6 +457,7 @@ def debate(
     template: str = typer.Option(None, "--template", help="Decision template: hire, build, invest"),
     context: str = typer.Option(None, "--context", "-x", help="Path to project/dir/file for auto-context injection"),
     persona: str = typer.Option(None, "--persona", help="Persona names or category for debate perspectives"),
+    export: str = typer.Option(None, "--export", help="Export transcript: html or md"),
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw text"),
 ):
     """Run a multi-round debate where models revise based on each other.
@@ -742,6 +743,28 @@ def debate(
 
     # Write full debate transcript to session file
     _write_debate_transcript(result, query, rounds, style)
+
+    # Export if requested
+    if export:
+        from .export import export_html, export_markdown
+        if export.lower() in ("html", "htm"):
+            output = export_html(result)
+            ext = "html"
+        elif export.lower() in ("md", "markdown"):
+            output = export_markdown(result)
+            ext = "md"
+        else:
+            console.print(f"[red]Unknown export format: {export}. Use 'html' or 'md'.[/red]")
+            return
+
+        slug = query.lower()[:40].strip()
+        for ch in " ?!.,;:'\"()[]{}":
+            slug = slug.replace(ch, "-")
+        slug = "-".join(part for part in slug.split("-") if part)
+        import datetime
+        filename = f"debate-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}-{slug}.{ext}"
+        Path(filename).write_text(output)
+        console.print(f"[bold green]📄 Exported: {filename}[/bold green]")
 
 
 def _write_debate_transcript(result: dict, query: str, rounds: int, style: str):
