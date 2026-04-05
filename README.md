@@ -123,7 +123,7 @@ This means `moa ask "Should I take equity or salary?"` automatically gets de-ris
 
 When models disagree, the system:
 1. Uses a cheap model to derive 2-3 search queries
-2. Searches the web via [Firecrawl](https://firecrawl.dev)
+2. Searches the web via [Firecrawl](https://firecrawl.dev) (falls back to DuckDuckGo if no Firecrawl key — free, no API key needed)
 3. Re-asks the same models with reference docs injected
 4. Synthesizes with source attribution
 
@@ -191,10 +191,12 @@ moa ask --persona "Ann Handley" "Would a real person say this out loud?"
 ```bash
 moa debate "Event sourcing vs CRUD for orders?"
 moa debate --style adversarial "Should we rewrite in Rust?"
+moa debate --style adversarial --template hire "Senior engineer or two juniors?"
+moa debate --style adversarial --template build "Build auth in-house or use Auth0?"
 moa debate --persona "DHH,Kelsey Hightower" "Do we need Kubernetes?"
 ```
 
-Debates include live battle commentary, argument previews at each round, and convergence detection. Adversarial debates show which side's assumptions hold up, conditional scenarios, and how to de-risk the decision.
+Debates are **research-grounded** — both sides get real web sources and cite evidence, and the judge verifies claims. **Circuit breakers** auto-skip broken models and pick the next-strongest. **Decision templates** (`--template hire|build|invest`) add domain-specific judge criteria. Auto-extends rounds if positions are still shifting, exits early on convergence.
 
 For the full situational guide with 12 real scenarios, see **[docs/USE_CASES.md](docs/USE_CASES.md)**.
 
@@ -223,6 +225,8 @@ moa debate "..."        # Multi-round debate with challenge rounds
 moa review --staged     # Expert panel code review
 moa status              # Model roster, API keys, budget
 moa verify              # Ping all models
+moa health              # Circuit breaker status for all models
+moa templates           # List available decision templates
 moa test                # Automated smoke tests
 moa history --cost      # Spend tracking
 moa serve               # HTTP API server
@@ -327,18 +331,25 @@ All system prompts live in `src/moa/prompts.py` — edit them directly to change
 
 ```
 src/moa/
-├── cli.py        # Typer CLI (10 commands including test)
-├── engine.py     # Core: adaptive, cascade, debate, review, deep research
-├── models.py     # 14 models, 4 tiers, 14 personas, reviewer roles
-├── research.py   # SearchProvider protocol, Firecrawl, lite/deep search
-├── prompts.py    # All prompt templates
-├── server.py     # FastAPI HTTP API (5 endpoints)
-├── context.py    # Project context detection + injection
-├── config.py     # Constants (timeouts, budget, rate limits)
-├── cache.py      # SQLite response caching (1hr TTL)
-├── budget.py     # Daily spend cap ($5/day default)
-├── history.py    # JSONL query logging
-└── verify.py     # Model connectivity test
+├── cli.py           # Typer CLI (11 commands)
+├── engine.py        # Re-export layer (backward compat)
+├── orchestrator.py  # Model calls, cost tracking, agreement, ranking
+├── adaptive.py      # Adaptive routing, MoA, cascade, deep research
+├── debate.py        # Peer + adversarial debate (composable pipeline)
+├── review.py        # Expert panel code review
+├── events.py        # Typed event system (EventType enum + DebateEvent)
+├── models.py        # 14 models, 4 tiers, 14 personas, reviewer roles
+├── templates.py     # Decision templates (hire, build, invest)
+├── health.py        # Circuit breakers, health-aware model selection
+├── research.py      # SearchProvider protocol, Firecrawl + DuckDuckGo
+├── prompts.py       # All prompt templates
+├── server.py        # FastAPI HTTP API (5 endpoints)
+├── context.py       # Project context detection + injection
+├── config.py        # Constants (timeouts, budget, rate limits)
+├── cache.py         # SQLite response caching (1hr TTL)
+├── budget.py        # Daily spend cap ($5/day default)
+├── history.py       # JSONL query logging
+└── verify.py        # Model connectivity test
 ```
 
 ## Configuration
@@ -356,7 +367,7 @@ All configuration via environment variables. No config files to manage.
 | `CACHE_TTL_HOURS` | 1 | Response cache TTL |
 | `MOA_SERVER_KEY` | — | API server auth key |
 
-State files live in `~/.moa/`: usage.json, history.jsonl, cache/cache.db, sessions/.
+State files live in `~/.moa/`: usage.json, history.jsonl, cache/cache.db, sessions/, health.json, debates/.
 
 ## All Flags
 
@@ -365,6 +376,7 @@ State files live in `~/.moa/`: usage.json, history.jsonl, cache/cache.db, sessio
 | `--persona` | ask, debate, review | — | Persona names or category |
 | `--research` | ask | `auto` | `auto`, `lite`, `deep`, `off` |
 | `--style` | debate | `peer` | `peer`, `adversarial` |
+| `--template` | debate | auto-detect | `hire`, `build`, `invest` |
 | `--discourse` | review | off | Reviewers react to each other |
 | `--personas` | review | off | Use code review personas |
 | `--layers` | ask | 1 | Aggregation layers (1-3) |
