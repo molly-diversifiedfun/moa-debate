@@ -375,6 +375,29 @@ State files live in `~/.moa/`: usage.json, history.jsonl, cache/cache.db, sessio
 | `--no-cache` | ask | off | Bypass cache |
 | `--debug` | ask | off | Show full prompt sent to models |
 
+## Claude Code Integration
+
+MOA works as slash commands inside [Claude Code](https://claude.ai/code). Install the commands:
+
+```bash
+# Copy slash commands to your Claude Code config
+cp claude-code/moa.md ~/.claude/commands/moa.md
+cp claude-code/moa-debate.md ~/.claude/commands/moa-debate.md
+cp claude-code/moa-review.md ~/.claude/commands/moa-review.md
+```
+
+Then in Claude Code:
+```bash
+/moa "Should we use microservices?"                           # Multi-model query
+/moa --persona product "Is this feature worth building?"      # Product personas
+/moa --research deep "How do I configure LiteLLM failover?"   # Deep research
+/moa-debate --style adversarial "Should we rewrite in Rust?"  # Angel vs devil
+/moa-review                                                    # Expert panel review
+/moa-review --personas --discourse                            # Persona review with discourse
+```
+
+The slash command files are in `claude-code/` — customize them for your setup (update the path to your moa-debate venv).
+
 ## HTTP API
 
 ```bash
