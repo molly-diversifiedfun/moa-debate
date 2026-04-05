@@ -11,6 +11,7 @@ CACHE_DIR = MOA_HOME / "cache"
 
 # ── Timeouts ───────────────────────────────────────────────────────────────────
 MODEL_TIMEOUT_SECONDS = 45          # Per-model call timeout
+DEBATE_TIMEOUT_SECONDS = 90         # Debate calls get more time (long prompts + research)
 AGGREGATOR_TIMEOUT_SECONDS = 60     # Aggregators get more time (larger input)
 
 # ── Budget ─────────────────────────────────────────────────────────────────────

@@ -8,7 +8,7 @@ from typing import List, Optional, Dict, Any, Callable
 from litellm import acompletion
 
 from .config import (
-    MODEL_TIMEOUT_SECONDS, AGGREGATOR_TIMEOUT_SECONDS, PROVIDER_CONCURRENCY,
+    MODEL_TIMEOUT_SECONDS, DEBATE_TIMEOUT_SECONDS, AGGREGATOR_TIMEOUT_SECONDS, PROVIDER_CONCURRENCY,
 )
 from .budget import check_budget, record_spend
 from .models import (
@@ -1337,21 +1337,33 @@ async def _run_adversarial_debate(
     if not tier:
         raise ValueError(f"Unknown tier: {tier_name}")
 
-    # For adversarial debate, use the STRONGEST available models across ALL tiers
-    # (not just the selected tier) — we want heavyweight reasoning, not mid-tier
+    # For adversarial debate, use the STRONGEST HEALTHY models across ALL tiers.
+    # Skip models with open circuit breakers — they'll just waste time.
     from .models import available_models as get_all_available
+    from .health import should_skip
     all_available = get_all_available()
-    if len(all_available) < 2:
+    # Filter out circuit-broken models, then rank by capability
+    healthy = [m for m in all_available if not should_skip(m.name)]
+    if len(healthy) < 2:
+        # Fall back to all available if not enough healthy ones
+        healthy = all_available
+    if len(healthy) < 2:
         raise RuntimeError("Adversarial debate requires at least 2 available models.")
 
     # Sort by capability (output cost as proxy) — most expensive = strongest
-    ranked = sorted(all_available, key=lambda m: m.output_cost_per_mtok, reverse=True)
+    ranked = sorted(healthy, key=lambda m: m.output_cost_per_mtok, reverse=True)
     angel_model = ranked[0]
     # Devil must be from a DIFFERENT provider for genuine diversity
     devil_model = next(
         (m for m in ranked[1:] if m.provider != angel_model.provider),
         ranked[1],
     )
+    # Log if we downgraded from the top models
+    all_ranked = sorted(all_available, key=lambda m: m.output_cost_per_mtok, reverse=True)
+    if all_ranked[0].name != angel_model.name or (len(all_ranked) > 1 and all_ranked[1].name != devil_model.name):
+        skipped_names = [m.name.split("/")[-1] for m in all_ranked if should_skip(m.name)]
+        if skipped_names:
+            _progress(f"⚡ Skipping unhealthy models: {', '.join(skipped_names)}")
     cost = QueryCost(tier=f"adversarial-{tier_name}")
     start = time.monotonic()
     all_rounds = []
@@ -1464,11 +1476,11 @@ async def _run_adversarial_debate(
     angel_task = call_model(angel_model, [
         {"role": "system", "content": angel_system},
         {"role": "user", "content": query},
-    ])
+    ], timeout=DEBATE_TIMEOUT_SECONDS)
     devil_task = call_model(devil_model, [
         {"role": "system", "content": devil_system},
         {"role": "user", "content": query},
-    ])
+    ], timeout=DEBATE_TIMEOUT_SECONDS)
 
     angel_r, devil_r = await asyncio.gather(angel_task, devil_task)
     _progress("__FIGHT_STOP__")
@@ -1613,11 +1625,11 @@ async def _run_adversarial_debate(
         angel_task = call_model(angel_model, [
             {"role": "system", "content": _angel_rev_sys},
             {"role": "user", "content": query},
-        ])
+        ], timeout=DEBATE_TIMEOUT_SECONDS)
         devil_task = call_model(devil_model, [
             {"role": "system", "content": _devil_rev_sys},
             {"role": "user", "content": query},
-        ])
+        ], timeout=DEBATE_TIMEOUT_SECONDS)
 
         angel_r, devil_r = await asyncio.gather(angel_task, devil_task)
         _progress("__FIGHT_STOP__")
