@@ -338,6 +338,24 @@ Rules:
 - Be specific and technical — the user chose deep research because they need precision"""
 
 
+STRATEGIC_ADDENDUM = """
+
+IMPORTANT — this is a strategic/judgment question. In addition to the format above, \
+add these sections at the end:
+
+## It Depends On...
+[2-3 conditional scenarios where the answer changes. Format as:]
+- **If [condition]**: then [recommendation].
+- **If [opposite condition]**: then [different recommendation].
+[Focus on the conditions the asker is least likely to have considered.]
+
+## How to De-Risk This
+[3-5 specific, actionable steps to reduce risk before fully committing. \
+These should be things you can do in days or weeks, not months. Examples: \
+"Run a landing page test," "Interview 10 potential customers," "Build a prototype in a weekend."]
+"""
+
+
 FACTUAL_VERIFICATION_PROMPT = """You are a fact-checker. Multiple AI models answered the \
 same question. Check their responses for:
 

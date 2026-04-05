@@ -21,7 +21,7 @@ from .prompts import (
     MOA_AGGREGATOR_SYSTEM, DEBATE_ROUND_SYSTEM, DEBATE_JUDGE_SYSTEM,
     CODE_REVIEW_AGGREGATOR, format_proposals, format_review_findings,
     CLASSIFY_QUERY_PROMPT, DISAGREEMENT_SYNTHESIS_PROMPT, CONSENSUS_AGGREGATOR_PROMPT,
-    PAIRWISE_RANK_PROMPT, REVIEWER_DISCOURSE_SYSTEM, MOA_VERIFY_SYSTEM,
+    PAIRWISE_RANK_PROMPT, REVIEWER_DISCOURSE_SYSTEM, MOA_VERIFY_SYSTEM, STRATEGIC_ADDENDUM,
     DEBATE_CHALLENGE_SYSTEM, DEBATE_REVISION_WITH_CHALLENGES_SYSTEM,
     DEBATE_ANGEL_SYSTEM, DEBATE_DEVIL_SYSTEM, DEBATE_ADVERSARIAL_JUDGE_SYSTEM,
 )
@@ -739,12 +739,15 @@ async def run_adaptive(query: str, research_mode: str = "auto") -> Dict[str, Any
         from .models import get_aggregator
         synthesizer = get_aggregator(prefer_premium=(classification == "COMPLEX"))
 
+    # Add strategic analysis sections for STRATEGIC/JUDGMENT queries
+    strategic_extra = STRATEGIC_ADDENDUM if domain in ("STRATEGIC", "JUDGMENT") else ""
+
     if agreement["consensus"]:
         # High agreement → clean synthesis (don't mention disagreement)
         if synthesizer:
             synth_prompt = CONSENSUS_AGGREGATOR_PROMPT.format(
                 proposals=format_proposals(proposals, model_names)
-            )
+            ) + strategic_extra
             synth_result = await call_model(
                 synthesizer,
                 [{"role": "system", "content": synth_prompt + session_note}, {"role": "user", "content": query}],
@@ -798,7 +801,7 @@ async def run_adaptive(query: str, research_mode: str = "auto") -> Dict[str, Any
             synth_prompt = DISAGREEMENT_SYNTHESIS_PROMPT.format(
                 query=query,
                 proposals=format_proposals(proposals, model_names)
-            )
+            ) + strategic_extra
             synth_result = await call_model(
                 synthesizer,
                 [{"role": "system", "content": synth_prompt + session_note}, {"role": "user", "content": query}],
@@ -1291,7 +1294,7 @@ async def run_debate(
     judge_result = await call_model(
         aggregator,
         [
-            {"role": "system", "content": DEBATE_JUDGE_SYSTEM.format(final_positions=final_text)},
+            {"role": "system", "content": DEBATE_JUDGE_SYSTEM.format(final_positions=final_text) + STRATEGIC_ADDENDUM},
             {"role": "user", "content": query},
         ],
         temperature=0.1,
