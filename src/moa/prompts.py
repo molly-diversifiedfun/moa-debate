@@ -227,19 +227,21 @@ def format_review_findings(findings: list) -> str:
 
 # ── Adaptive flow prompts ──────────────────────────────────────────────────────
 
-CLASSIFY_QUERY_PROMPT = """Classify this query into one of three complexity tiers AND one domain:
+CLASSIFY_QUERY_PROMPT = """Classify this query into one complexity tier AND one domain.
 
 Tiers:
-- SIMPLE: Factoid, lookup, single clear answer, unambiguous instruction
-- STANDARD: Requires reasoning or analysis, but one best answer likely exists
-- COMPLEX: Multiple valid perspectives, subjective, contentious, multi-step design decision
+- SIMPLE: Factoid, lookup, single clear answer. Example: "What port does HTTP use?"
+- STANDARD: Requires reasoning, but one best answer likely exists. Example: "How do I handle errors in async JavaScript?"
+- COMPLEX: Multiple valid perspectives, subjective, contentious. Example: "Should we use microservices or a monolith?"
 
-Domains:
-- FACTUAL: Verifiable facts, definitions, lookups, "what is X?"
-- TECHNICAL: Implementation details, how-to, debugging, API usage
-- CREATIVE: Design, UX, naming, branding, content creation
-- JUDGMENT: Opinions, trade-offs, "should I X or Y?"
-- STRATEGIC: Architecture, business decisions, long-term planning
+Domains (choose based on what the question is REALLY asking, not what tools it mentions):
+- FACTUAL: Verifiable facts, definitions, lookups. "What is X?" "How many Y?"
+- TECHNICAL: Implementation HOW-TO, debugging, specific API usage. "How do I configure X?" "Why is this error happening?"
+- CREATIVE: Design, UX, naming, branding, content creation. "What should I name this?" "Design a logo concept."
+- JUDGMENT: Trade-offs between options, "should I X or Y?" where both are valid. "Redis vs Memcached?" "Is TypeScript worth it?"
+- STRATEGIC: Business decisions, platform/architecture choices for a team/company, long-term planning. "Should our startup use Supabase or Firebase?" "Monorepo vs polyrepo for our org?" "Build vs buy?"
+
+Key distinction: "How do I use Supabase auth?" = TECHNICAL. "Should our startup use Supabase or Firebase?" = STRATEGIC. The presence of tool names doesn't make it TECHNICAL — the nature of the decision does.
 
 Respond with ONLY a JSON object, no other text:
 {"tier": "SIMPLE" | "STANDARD" | "COMPLEX", "domain": "FACTUAL" | "TECHNICAL" | "CREATIVE" | "JUDGMENT" | "STRATEGIC"}"""
