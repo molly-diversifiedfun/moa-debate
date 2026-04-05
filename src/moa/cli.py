@@ -802,6 +802,55 @@ def _write_debate_transcript(result: dict, query: str, rounds: int, style: str):
 
 
 @app.command()
+def health():
+    """Show model health status and circuit breaker states."""
+    from .health import get_health, HEALTH_FILE
+    from .models import ALL_MODELS
+    import time as _t
+
+    table = Table(title="Model Health")
+    table.add_column("Model", style="cyan")
+    table.add_column("State", style="bold")
+    table.add_column("Failures", justify="right")
+    table.add_column("Success Rate", justify="right")
+    table.add_column("Last Failure", style="dim")
+
+    for model in ALL_MODELS:
+        if not model.available:
+            continue
+        h = get_health(model.name)
+        short = model.name.split("/")[-1] if "/" in model.name else model.name
+
+        state = h.state
+        if state == "closed":
+            state_str = "[green]● healthy[/green]"
+        elif state == "half_open":
+            state_str = "[yellow]◐ testing[/yellow]"
+        else:
+            state_str = "[red]○ skipped[/red]"
+
+        failures = str(h.consecutive_failures) if h.consecutive_failures > 0 else "-"
+        rate = f"{h.success_rate:.0%}" if (h.total_failures_1h + h.total_successes_1h) > 0 else "-"
+
+        if h.last_failure_ts > 0:
+            ago = int(_t.time() - h.last_failure_ts)
+            if ago < 60:
+                last = f"{ago}s ago"
+            elif ago < 3600:
+                last = f"{ago // 60}m ago"
+            else:
+                last = f"{ago // 3600}h ago"
+        else:
+            last = "-"
+
+        table.add_row(short, state_str, failures, rate, last)
+
+    console.print(table)
+    if HEALTH_FILE.exists():
+        console.print(f"[dim]  Data: {HEALTH_FILE}[/dim]")
+
+
+@app.command()
 def verify():
     """Verify that model names work by pinging each available model."""
     from .verify import verify_all_models

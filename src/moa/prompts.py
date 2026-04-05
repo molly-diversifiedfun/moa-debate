@@ -1,35 +1,53 @@
-"""Prompt templates for MoA aggregation, debate, and code review synthesis."""
+"""Prompt templates for MoA aggregation, debate, and code review synthesis.
+
+Optimized for multi-model ensembles where reliability gains come from:
+  - Discounting outliers instead of averaging them in
+  - Cross-model consistency as a hallucination signal
+  - Anti-sycophancy in debate rounds (hold positions with strong reasoning)
+  - Explicit conflict resolution rules (facts vs. reasoning vs. subjective)
+  - Source hierarchy for research synthesis
+"""
 
 # ── MoA Aggregator ─────────────────────────────────────────────────────────────
 
-MOA_AGGREGATOR_SYSTEM = """You have been provided with a set of responses from various \
-models to the latest user query. Your job is to synthesize these into a single, \
-high-quality response.
+MOA_AGGREGATOR_SYSTEM = """You have multiple model responses to a user query. \
+Synthesize them into a single, higher-quality answer.
 
-Critically evaluate the information provided by each model. Some responses may be \
-biased, incomplete, or incorrect. Do not simply merge them — identify the most \
-accurate and well-reasoned points across all responses, resolve contradictions by \
-reasoning about which answer is more likely correct, and produce a refined, accurate, \
-and comprehensive reply.
+Resolution rules when responses conflict:
+1. Verifiable facts (dates, numbers, APIs, syntax): pick the answer that is most \
+   specific and internally consistent. If models cite DIFFERENT numbers/dates for \
+   the SAME fact, flag it briefly — do not average or take majority without reasoning.
+2. Reasoning and trade-offs: prefer responses with the most complete causal chain. \
+   Reject conclusions asserted without reasoning.
+3. Subjective questions: present the strongest framing, not the average framing.
+4. Outliers: if one response is off-topic, internally contradictory, or misses the \
+   point, discount it rather than merging it in.
 
-Do NOT mention that you are synthesizing multiple responses. Write as if you are \
-directly answering the user's question.
+Do NOT manufacture consensus. If models genuinely disagree on something material, \
+surface that briefly inside your answer.
 
-Responses from models:
+Write as if you are directly answering the user. Do not mention that you are \
+synthesizing multiple models.
+
+Responses:
 {proposals}"""
 
 
 # ── Debate ─────────────────────────────────────────────────────────────────────
 
-DEBATE_ROUND_SYSTEM = """You previously answered a question. Other models have also \
-answered the same question. Their responses are shown below.
+DEBATE_ROUND_SYSTEM = """You previously answered a question. Other models answered the \
+same question — their responses are below.
 
-Review their responses carefully. If you see points that are more accurate or \
-well-reasoned than yours, update your answer accordingly. If you believe your original \
-answer was correct where others disagree, explain why with specific reasoning.
+Rules for revision:
+- Update your answer ONLY when another model's reasoning is specifically better than \
+  yours. Name the point that changed your mind.
+- Do NOT cave to majority. If multiple models disagree with you but your reasoning is \
+  sound, hold your position and explain why.
+- Do NOT add hedges you didn't have before just because others disagreed. \
+  Calibration matters — don't sandbag your confidence to seem agreeable.
+- If you see considerations you genuinely missed, incorporate them.
 
-Produce your revised answer — a complete, self-contained response to the original \
-question incorporating any improvements.
+Produce a complete, self-contained revised answer.
 
 Other models' responses:
 {other_responses}"""
@@ -283,13 +301,18 @@ Respond with ONLY a JSON object, no other text:
 {"tier": "SIMPLE" | "STANDARD" | "COMPLEX", "domain": "FACTUAL" | "TECHNICAL" | "CREATIVE" | "JUDGMENT" | "STRATEGIC"}"""
 
 
-PAIRWISE_RANK_PROMPT = """Compare these two responses to the same question. \
-Which is more accurate, complete, and well-reasoned?
+PAIRWISE_RANK_PROMPT = """Compare these two responses to the same question. Which is better?
 
-Consider: factual correctness, depth of reasoning, completeness, and practical usefulness.
+Judge on:
+1. Factual correctness (most important)
+2. Reasoning completeness
+3. Practical usefulness
+4. Calibration — hedges where uncertain, confident where justified
+
+Tiebreaker: prefer the response that would be harder for a novice to misinterpret.
 
 Respond with ONLY a JSON object, no other text:
-{"winner": "A" or "B" or "TIE", "reason": "one sentence"}"""
+{"winner": "A" | "B" | "TIE", "reason": "one sentence"}"""
 
 
 DISAGREEMENT_SYNTHESIS_PROMPT = """You are synthesizing multiple model responses that DISAGREE on key points.
@@ -317,13 +340,18 @@ Model responses:
 
 # ── Research prompts ──────────────────────────────────────────────────────────
 
-SEARCH_QUERY_DERIVATION_PROMPT = """Given a user's question, derive 2-3 focused web search queries \
-that would find authoritative documentation, official docs, or technical references to help answer it.
+SEARCH_QUERY_DERIVATION_PROMPT = """Derive 2-3 focused web search queries that would \
+surface authoritative answers to the user's question.
+
+Source hierarchy you're trying to hit (in priority order):
+1. Official docs, RFCs, W3C/IETF specs, language references
+2. Primary source code — GitHub repos, release notes, changelogs
+3. Recognized technical references (MDN, Python docs, vendor docs)
+4. Well-known technical blogs (last resort)
 
 Rules:
-- Make queries specific and technical (not the original question verbatim)
-- Target official documentation, GitHub repos, RFCs, or authoritative sources
-- If the question mentions a specific tool/library/framework, include its name
+- Queries should be specific and technical, NOT paraphrases of the question
+- Include exact tool/library/framework names from the question
 - Keep each query under 10 words
 
 Respond with ONLY a JSON object, no other text:
@@ -372,18 +400,23 @@ These should be things you can do in days or weeks, not months. Examples: \
 """
 
 
-FACTUAL_VERIFICATION_PROMPT = """You are a fact-checker. Multiple AI models answered the \
-same question. Check their responses for:
+FACTUAL_VERIFICATION_PROMPT = """You are a fact-checker for multi-model responses. Flag \
+hallucination risk.
 
-1. Suspicious precision — exact numbers, dates, or statistics that seem too specific to be \
-   recalled accurately (e.g., "47.3 million" for a population that's hard to measure)
-2. Internal inconsistency — do the models cite different numbers for the same claim?
-3. Confident claims without qualification — are they stating uncertain things as facts?
+Red flags to check:
+1. Suspicious precision — specific numbers, dates, or statistics that LLMs commonly \
+   fabricate (exact populations, revenue figures, obscure event dates, version \
+   numbers, citation counts, benchmark scores).
+2. Cross-model inconsistency — models citing DIFFERENT numbers/dates/facts for the \
+   SAME claim. This is the strongest hallucination signal in an ensemble.
+3. Confident assertions without qualifiers on things LLMs typically don't know well \
+   (recent events, private company data, niche technical specifics, exact quotes).
+4. Compound risk — multiple suspect claims in one response amplifies hallucination risk.
 
-Respond with ONLY a JSON object:
-{"suspicious": true/false, "warning": "one sentence explaining the concern", "claims": ["claim 1 to verify", "claim 2"]}
+Respond with ONLY a JSON object, no other text:
+{"suspicious": true/false, "warning": "one sentence on the top concern", "claims": ["specific claim 1", "specific claim 2"]}
 
-If everything looks consistent and well-qualified, return:
+If everything is consistent and appropriately hedged:
 {"suspicious": false, "warning": "", "claims": []}"""
 
 

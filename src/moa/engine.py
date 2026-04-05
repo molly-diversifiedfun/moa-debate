@@ -74,14 +74,22 @@ async def call_model(
     Returns dict with 'content', 'input_tokens', 'output_tokens', 'model',
     'provider', 'cost_usd', 'latency_s' or None on total failure.
     """
+    from .health import should_skip, record_success, record_failure, get_timeout_for_attempt
+
+    # Circuit breaker: skip models that are consistently failing
+    skip_reason = should_skip(model.name)
+    if skip_reason:
+        return None
+
     temp = temperature if temperature is not None else model.temperature
     max_tok = max_tokens or model.max_tokens
-    call_timeout = timeout or MODEL_TIMEOUT_SECONDS
+    base_timeout = timeout or MODEL_TIMEOUT_SECONDS
 
     start = time.monotonic()
     last_error = None
 
     for attempt in range(3):
+        call_timeout = get_timeout_for_attempt(base_timeout, attempt)
         try:
             sem = _get_semaphore(model.provider)
             async with sem:
@@ -99,6 +107,7 @@ async def call_model(
             input_tok = usage.get("prompt_tokens", 0)
             output_tok = usage.get("completion_tokens", 0)
 
+            record_success(model.name)
             return {
                 "content": resp.choices[0].message.content,
                 "input_tokens": input_tok,
@@ -110,13 +119,14 @@ async def call_model(
             }
         except asyncio.TimeoutError:
             last_error = f"timeout ({call_timeout}s)"
+            record_failure(model.name)
             break  # Don't retry timeouts
         except Exception as e:
             last_error = str(e)[:100]
+            record_failure(model.name)
             if attempt < 2:
                 await asyncio.sleep(2 ** attempt)
 
-    # Return failure info (not None) so we can report what happened
     return None
 
 

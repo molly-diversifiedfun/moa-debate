@@ -126,7 +126,8 @@ async def test_call_model_handles_failure():
     from moa.engine import call_model
     from moa.models import GEMINI_FLASH
 
-    with patch("moa.engine.acompletion", side_effect=Exception("API Error")):
+    with patch("moa.engine.acompletion", side_effect=Exception("API Error")), \
+         patch("moa.health.should_skip", return_value=None):
         result = await call_model(
             GEMINI_FLASH, [{"role": "user", "content": "test"}]
         )
@@ -142,7 +143,8 @@ async def test_call_model_timeout():
     async def slow_response(*args, **kwargs):
         await asyncio.sleep(10)
 
-    with patch("moa.engine.acompletion", side_effect=slow_response):
+    with patch("moa.engine.acompletion", side_effect=slow_response), \
+         patch("moa.health.should_skip", return_value=None):
         result = await call_model(
             GEMINI_FLASH,
             [{"role": "user", "content": "test"}],
@@ -164,7 +166,8 @@ async def test_call_model_returns_real_cost():
         "usage": {"prompt_tokens": 100, "completion_tokens": 50}
     }.get(key, default)
 
-    with patch("moa.engine.acompletion", return_value=mock_response):
+    with patch("moa.engine.acompletion", return_value=mock_response), \
+         patch("moa.health.should_skip", return_value=None):
         result = await call_model(
             GEMINI_FLASH,
             [{"role": "user", "content": "test"}],
