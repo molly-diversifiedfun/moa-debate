@@ -4,7 +4,12 @@ import asyncio
 import logging
 import subprocess
 import sys
+import warnings
 from pathlib import Path
+
+# Suppress urllib3 NotOpenSSLWarning (Python 3.9 ships LibreSSL, not OpenSSL)
+warnings.filterwarnings("ignore", message=".*NotOpenSSLWarning.*")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="urllib3")
 
 # Suppress LiteLLM's noisy stderr ("Give Feedback", "Provider List" messages)
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
@@ -496,20 +501,163 @@ def debate(
             result = _run_async(run_debate(query, rounds=rounds, tier_name=tier, debate_style=style))
     else:
         import time as _time
+        import threading
+        from rich.live import Live
+        from rich.text import Text
+
         _debate_start = _time.monotonic()
+
+        # ── Fight animation + spinner ─────────────────────────────────────
+        # Animation on top, spinner status line on bottom. All one Live block.
+        _FIGHT_SCENES = [
+            # Sizing up
+            "   O/)          (\\O\n"
+            "  /|              |\\\n"
+            "  / \\            / \\",
+            # Approach
+            "     O/)      (\\O\n"
+            "    /|          |\\\n"
+            "    / \\        / \\",
+            # Lunge
+            "       O/━━> (\\O\n"
+            "      /|        |\\\n"
+            "      / \\      / \\",
+            # Clash
+            "        O>━╋━<O\n"
+            "       /|     |\\\n"
+            "       / \\   / \\",
+            # Sparks
+            "       O>✨💥✨<O\n"
+            "       /|  ⚡  |\\\n"
+            "       / \\   / \\",
+            # Counter
+            "        O\\  ━/O\n"
+            "       /|     |\\\n"
+            "       / \\   / \\",
+            # Parry
+            "       \\O)━╋━(O/\n"
+            "        |     |\n"
+            "       / \\   / \\",
+            # Big hit
+            "      O>━━╋━━<O\n"
+            "     /|\\  ⚡  /|\\\n"
+            "     / \\     / \\",
+            # Knockback
+            "  <O              O>\n"
+            "  /|\\    💨    /|\\\n"
+            "  / \\          / \\",
+            # Reset
+            "    O/)        (\\O\n"
+            "   /|            |\\\n"
+            "   / \\          / \\",
+        ]
+        _FIGHT_MSGS = [
+            "Models forming arguments",
+            "Weighing positions",
+            "Sharpening rebuttals",
+            "Trading blows",
+            "Refining counterpoints",
+        ]
+        _JUDGE_SCENES = [
+            "       ⚖️\n"
+            "      \\O/\n"
+            "       |\n"
+            "      / \\",
+            "       ⚖️\n"
+            "      (O)\n"
+            "       |\n"
+            "      / \\",
+        ]
+        _JUDGE_MSGS = [
+            "Reviewing testimony",
+            "Weighing the evidence",
+            "Cross-referencing claims",
+            "Testing assumptions",
+            "Forming verdict",
+        ]
+
+        # Animation state
+        _anim_stop = threading.Event()
+        _anim_thread = None
+        _spin_chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+        def _start_anim(scenes: list, messages: list, speed: float = 0.25):
+            nonlocal _anim_thread
+            _stop_anim()
+            _anim_stop.clear()
+            def _run():
+                idx = 0
+                msg_idx = 0
+                with Live(Text(""), console=console, refresh_per_second=8, transient=True) as live:
+                    while not _anim_stop.is_set():
+                        scene = scenes[idx % len(scenes)]
+                        spin = _spin_chars[idx % len(_spin_chars)]
+                        msg = messages[msg_idx % len(messages)]
+                        elapsed = int(_time.monotonic() - _debate_start)
+                        display = f"{scene}\n  {spin} {msg}...  [{elapsed}s]"
+                        live.update(Text(display, style="cyan"))
+                        idx += 1
+                        if idx % 20 == 0:
+                            msg_idx += 1
+                        _anim_stop.wait(speed)
+            _anim_thread = threading.Thread(target=_run, daemon=True)
+            _anim_thread.start()
+
+        def _stop_anim():
+            nonlocal _anim_thread
+            if _anim_thread and _anim_thread.is_alive():
+                _anim_stop.set()
+                _anim_thread.join(timeout=1)
+                _anim_thread = None
 
         def _debate_progress(msg):
             elapsed = int(_time.monotonic() - _debate_start)
             timestamp = f"[dim][{elapsed}s][/dim] "
-            # Use cyan for the battle card, white for commentary
+
+            # Animation control signals (not displayed)
+            if msg == "__FIGHT_START__":
+                _start_anim(_FIGHT_SCENES, _FIGHT_MSGS, speed=0.25)
+                return
+            elif msg == "__FIGHT_STOP__":
+                _stop_anim()
+                return
+            elif msg == "__JUDGE_START__":
+                _start_anim(_JUDGE_SCENES, _JUDGE_MSGS, speed=0.6)
+                return
+            elif msg == "__JUDGE_STOP__":
+                _stop_anim()
+                return
+
+            # Battle card box — no timestamp, bold cyan
             if "╔" in msg or "║" in msg or "╚" in msg:
                 console.print(f"[bold cyan]{msg}[/bold cyan]")
-            elif msg.startswith("   👼") or msg.startswith("   😈"):
-                console.print(f"{timestamp}[white]{msg}[/white]")
-            elif "📊" in msg:
+            # Divider lines
+            elif msg.strip().startswith("─"):
+                console.print(f"[dim]{msg}[/dim]")
+            # Agreement bar
+            elif "█" in msg or "░" in msg:
                 console.print(f"{timestamp}[yellow]{msg}[/yellow]")
+            # Argument previews (quoted text from models)
+            elif "│" in msg:
+                console.print(f"[white]{msg}[/white]")
+            elif msg.strip().startswith("👼") or msg.strip().startswith("😈"):
+                console.print(f"{timestamp}[bold white]{msg}[/bold white]")
+            # Convergence / end states
             elif "🤝" in msg:
                 console.print(f"{timestamp}[bold green]{msg}[/bold green]")
+            elif "🪨" in msg or "⏰" in msg:
+                console.print(f"{timestamp}[yellow]{msg}[/yellow]")
+            elif "🔄 Still shifting" in msg:
+                console.print(f"{timestamp}[magenta]{msg}[/magenta]")
+            # Research phase
+            elif "🔍" in msg or "📚" in msg:
+                console.print(f"{timestamp}[bold blue]{msg}[/bold blue]")
+            # Judge entrance
+            elif "JUDGE" in msg:
+                console.print(f"\n{timestamp}[bold yellow]{msg}[/bold yellow]")
+            # Round headers
+            elif any(e in msg for e in ["⚔️", "🔥", "💥", "🗡️", "🌪️"]):
+                console.print(f"{timestamp}[bold cyan]{msg}[/bold cyan]")
             else:
                 console.print(f"{timestamp}[cyan]{msg}[/cyan]")
 
@@ -517,6 +665,7 @@ def debate(
             query, rounds=rounds, tier_name=tier,
             debate_style=style, on_progress=_debate_progress,
         ))
+        _stop_anim()  # ensure cleanup
 
     if raw:
         print(result["response"])
@@ -530,13 +679,20 @@ def debate(
         title = f"[bold green]Debate — converged at round {converged}/{rounds}[/bold green]"
         border = "green"
     elif style_label == "adversarial":
-        title = f"[bold red]Adversarial Debate ({rounds} rounds)[/bold red]"
+        extended = " + auto-extended" if total_rounds > rounds else ""
+        title = f"[bold red]Adversarial Debate ({total_rounds} rounds{extended})[/bold red]"
         border = "red"
     else:
         title = f"[bold yellow]Debate ({rounds} rounds)[/bold yellow]"
         border = "yellow"
 
     console.print(Panel(Markdown(result["response"]), title=title, border_style=border))
+
+    # Sources panel (if research-grounded)
+    sources = result.get("research_sources", [])
+    if sources:
+        source_text = "\n".join(f"  [{i+1}] {url}" for i, url in enumerate(sources))
+        console.print(Panel(source_text, title="[bold blue]Sources[/bold blue]", border_style="blue"))
 
     # Model status
     if result.get("model_status"):
@@ -553,7 +709,96 @@ def debate(
         footer_parts.append(f"📊 {total_rounds} rounds completed")
     if style_label == "adversarial":
         footer_parts.append("⚔️ Adversarial")
+    if result.get("research_grounded"):
+        footer_parts.append("📚 Research-grounded")
     console.print(f"[dim]  {'  ·  '.join(footer_parts)}[/dim]")
+
+    # Write full debate transcript to session file
+    _write_debate_transcript(result, query, rounds, style)
+
+
+def _write_debate_transcript(result: dict, query: str, rounds: int, style: str):
+    """Write full debate transcript to ~/.moa/debates/ as markdown."""
+    import datetime
+
+    debates_dir = MOA_HOME / "debates"
+    debates_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    # Slug from query
+    slug = query.lower()[:50].strip()
+    for ch in " ?!.,;:'\"()[]{}":
+        slug = slug.replace(ch, "-")
+    slug = "-".join(part for part in slug.split("-") if part)
+    filename = f"{timestamp}-{slug}.md"
+    filepath = debates_dir / filename
+
+    all_rounds = result.get("rounds", [])
+    cost = result["cost"]
+    lines = [
+        f"# Debate: {query}",
+        f"",
+        f"**Date:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"**Style:** {style}",
+        f"**Rounds:** {len(all_rounds) - 1} (requested {rounds})",
+        f"**Advocate:** {result.get('angel_model', 'unknown')}",
+        f"**Critic:** {result.get('devil_model', 'unknown')}",
+        f"**Cost:** ${cost.estimated_cost_usd:.4f}",
+        f"**Tokens:** {cost.total_input_tokens + cost.total_output_tokens:,}",
+    ]
+
+    if result.get("converged_at"):
+        lines.append(f"**Converged:** Round {result['converged_at']}")
+
+    if result.get("research_sources"):
+        lines.append(f"")
+        lines.append(f"## Sources")
+        for i, url in enumerate(result["research_sources"]):
+            lines.append(f"{i+1}. {url}")
+
+    if result.get("research_context"):
+        lines.append(f"")
+        lines.append(f"## Research Context")
+        lines.append(f"")
+        lines.append(result["research_context"])
+
+    lines.append(f"")
+    lines.append(f"---")
+    lines.append(f"")
+
+    # Full arguments by round
+    for i, round_data in enumerate(all_rounds):
+        if i == 0:
+            lines.append(f"## Opening Arguments")
+        else:
+            lines.append(f"## Round {i}")
+        lines.append(f"")
+
+        if isinstance(round_data, dict):
+            if "angel" in round_data:
+                lines.append(f"### Advocate")
+                lines.append(f"")
+                lines.append(round_data["angel"])
+                lines.append(f"")
+                lines.append(f"### Critic")
+                lines.append(f"")
+                lines.append(round_data["devil"])
+            else:
+                for model_name, response in round_data.items():
+                    short = model_name.split("/")[-1] if "/" in model_name else model_name
+                    lines.append(f"### {short}")
+                    lines.append(f"")
+                    lines.append(response)
+            lines.append(f"")
+
+    lines.append(f"---")
+    lines.append(f"")
+    lines.append(f"## Verdict")
+    lines.append(f"")
+    lines.append(result.get("response", ""))
+
+    filepath.write_text("\n".join(lines))
+    console.print(f"[dim]  📄 Full transcript: {filepath}[/dim]")
 
 
 @app.command()
