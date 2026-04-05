@@ -495,8 +495,24 @@ def debate(
         with console.status("[bold cyan]Debating...[/bold cyan]"):
             result = _run_async(run_debate(query, rounds=rounds, tier_name=tier, debate_style=style))
     else:
+        import time as _time
+        _debate_start = _time.monotonic()
+
         def _debate_progress(msg):
-            console.print(f"[dim]{msg}[/dim]")
+            elapsed = int(_time.monotonic() - _debate_start)
+            timestamp = f"[dim][{elapsed}s][/dim] "
+            # Use cyan for the battle card, white for commentary
+            if "╔" in msg or "║" in msg or "╚" in msg:
+                console.print(f"[bold cyan]{msg}[/bold cyan]")
+            elif msg.startswith("   👼") or msg.startswith("   😈"):
+                console.print(f"{timestamp}[white]{msg}[/white]")
+            elif "📊" in msg:
+                console.print(f"{timestamp}[yellow]{msg}[/yellow]")
+            elif "🤝" in msg:
+                console.print(f"{timestamp}[bold green]{msg}[/bold green]")
+            else:
+                console.print(f"{timestamp}[cyan]{msg}[/cyan]")
+
         result = _run_async(run_debate(
             query, rounds=rounds, tier_name=tier,
             debate_style=style, on_progress=_debate_progress,

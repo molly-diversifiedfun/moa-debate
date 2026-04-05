@@ -1324,22 +1324,20 @@ async def _run_adversarial_debate(
     if not tier:
         raise ValueError(f"Unknown tier: {tier_name}")
 
-    available = tier.available_proposers
-    if len(available) < 2:
+    # For adversarial debate, use the STRONGEST available models across ALL tiers
+    # (not just the selected tier) — we want heavyweight reasoning, not mid-tier
+    from .models import available_models as get_all_available
+    all_available = get_all_available()
+    if len(all_available) < 2:
         raise RuntimeError("Adversarial debate requires at least 2 available models.")
 
-    # Pick the two strongest models from DIFFERENT providers for max diversity
-    # Sort by cost (proxy for capability) — most expensive = strongest
-    ranked = sorted(
-        available,
-        key=lambda m: m.output_cost_per_mtok,
-        reverse=True,
-    )
+    # Sort by capability (output cost as proxy) — most expensive = strongest
+    ranked = sorted(all_available, key=lambda m: m.output_cost_per_mtok, reverse=True)
     angel_model = ranked[0]
-    # Devil should be from a different provider than angel
+    # Devil must be from a DIFFERENT provider for genuine diversity
     devil_model = next(
         (m for m in ranked[1:] if m.provider != angel_model.provider),
-        ranked[1],  # fallback to same provider if only one available
+        ranked[1],
     )
     cost = QueryCost(tier=f"adversarial-{tier_name}")
     start = time.monotonic()
@@ -1351,15 +1349,16 @@ async def _run_adversarial_debate(
     devil_short = devil_model.name.split("/")[-1] if "/" in devil_model.name else devil_model.name
 
     # ── Round 0: Independent positions ─────────────────────────────────────
-    _progress(f"""
-    ╔══════════════════════════════════════════╗
-    ║          ⚔️  ADVERSARIAL DEBATE  ⚔️       ║
-    ║                                          ║
-    ║   👼 Advocate: {angel_short:<25s}║
-    ║   😈 Critic:   {devil_short:<25s}║
-    ║                                          ║
-    ║   \"Let them fight.\"                      ║
-    ╚══════════════════════════════════════════╝""")
+    _progress(
+        f"╔══════════════════════════════════════════════╗\n"
+        f"║            ⚔️  ADVERSARIAL DEBATE  ⚔️          ║\n"
+        f"║                                              ║\n"
+        f"║  👼 Advocate: {angel_short:<30s}║\n"
+        f"║  😈 Critic:   {devil_short:<30s}║\n"
+        f"║                                              ║\n"
+        f"║  \"Let them fight.\"                            ║\n"
+        f"╚══════════════════════════════════════════════╝"
+    )
     _progress("📝 Round 0: Both sides preparing opening arguments...")
     angel_task = call_model(angel_model, [
         {"role": "system", "content": DEBATE_ANGEL_SYSTEM.format(previous_round="This is your opening argument.")},
@@ -1422,8 +1421,11 @@ async def _run_adversarial_debate(
         )
 
     all_rounds.append({"angel": angel_pos, "devil": devil_pos})
-    _progress(f"   👼 Advocate: \"{angel_pos[:80]}...\"")
-    _progress(f"   😈 Critic:   \"{devil_pos[:80]}...\"")
+    # Show longer preview of opening arguments — let the viewer see the positions forming
+    angel_preview = angel_pos.replace("\n", " ")[:150].rsplit(" ", 1)[0]
+    devil_preview = devil_pos.replace("\n", " ")[:150].rsplit(" ", 1)[0]
+    _progress(f"   👼 \"{angel_preview}...\"")
+    _progress(f"   😈 \"{devil_preview}...\"")
 
     # ── Debate rounds ──────────────────────────────────────────────────────
     adversarial_round_msgs = [
@@ -1459,6 +1461,11 @@ async def _run_adversarial_debate(
             model_status[f"😈 {devil_short}"] = f"✅ R{round_num}:{devil_r['latency_s']}s"
 
         all_rounds.append({"angel": angel_pos, "devil": devil_pos})
+        # Show how positions evolved
+        angel_rev = angel_pos.replace("\n", " ")[:120].rsplit(" ", 1)[0]
+        devil_rev = devil_pos.replace("\n", " ")[:120].rsplit(" ", 1)[0]
+        _progress(f"   👼 Now arguing: \"{angel_rev}...\"")
+        _progress(f"   😈 Now arguing: \"{devil_rev}...\"")
 
         # Convergence check
         agreement = compute_agreement([angel_pos, devil_pos])
