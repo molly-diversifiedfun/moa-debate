@@ -708,5 +708,110 @@ def serve(
     uvicorn.run(app_instance, host=host, port=port)
 
 
+@app.command()
+def test(
+    full: bool = typer.Option(False, "--full", "-f", help="Run full validation suite (17 tests, ~$3)"),
+):
+    """Run automated smoke tests to validate MOA is working.
+
+    Default: quick smoke test (6 queries, ~$0.50, 3 min).
+    Use --full for the complete 17-test validation suite.
+    """
+    import time as time_mod
+
+    smoke_tests = [
+        {
+            "name": "Adaptive routing + confidence",
+            "cmd": lambda: _run_async(run_adaptive("What is the best way to handle errors in async JavaScript?")),
+            "check": lambda r: r.get("agreement_score") is not None and r.get("domain") is not None,
+        },
+        {
+            "name": "Factual classification",
+            "cmd": lambda: _run_async(run_adaptive("What HTTP status code means resource not found?")),
+            "check": lambda r: r.get("domain") == "FACTUAL",
+        },
+        {
+            "name": "Persona injection",
+            "cmd": lambda: _run_async(run_adaptive(
+                "[PERSONA PERSPECTIVES]\nAnswer from these perspectives:\n"
+                "- DHH: Question every layer of complexity.\n"
+                "[/PERSONA PERSPECTIVES]\n\nDo I need a microservice?"
+            )),
+            "check": lambda r: r.get("response") is not None and len(r["response"]) > 50,
+        },
+        {
+            "name": "Debate with convergence",
+            "cmd": lambda: _run_async(run_debate("Tabs vs spaces?", rounds=1)),
+            "check": lambda r: r.get("response") is not None and "rounds" in r,
+        },
+        {
+            "name": "Code review",
+            "cmd": lambda: _run_async(run_expert_review("function x() { eval(userInput); }")),
+            "check": lambda r: r.get("response") is not None and r.get("findings") is not None,
+        },
+    ]
+
+    if full:
+        smoke_tests.extend([
+            {
+                "name": "Adversarial debate",
+                "cmd": lambda: _run_async(run_debate("Should I use NoSQL?", rounds=1, debate_style="adversarial")),
+                "check": lambda r: r.get("debate_style") == "adversarial",
+            },
+            {
+                "name": "Pairwise ranking",
+                "cmd": lambda: _run_async(run_adaptive("Explain recursion simply")),
+                "check": lambda r: r.get("ranking") is not None,
+            },
+            {
+                "name": "Multi-layer MoA",
+                "cmd": lambda: _run_async(run_moa("What is 2+2?", "lite", layers=2)),
+                "check": lambda r: r.get("layers") == 2,
+            },
+        ])
+
+    console.print(f"[bold]Running {'full' if full else 'smoke'} test suite ({len(smoke_tests)} tests)...[/bold]\n")
+
+    results_table = Table(title="MOA Validation Results")
+    results_table.add_column("#", style="dim", width=3)
+    results_table.add_column("Test", style="cyan")
+    results_table.add_column("Status")
+    results_table.add_column("Cost", style="dim")
+    results_table.add_column("Time", style="dim")
+
+    total_cost = 0.0
+    total_time = 0
+    passed = 0
+    failed = 0
+
+    for i, t in enumerate(smoke_tests, 1):
+        console.print(f"  [dim]Running {i}/{len(smoke_tests)}: {t['name']}...[/dim]")
+        start = time_mod.monotonic()
+        try:
+            result = t["cmd"]()
+            elapsed_ms = int((time_mod.monotonic() - start) * 1000)
+            cost = result.get("cost")
+            cost_usd = cost.estimated_cost_usd if cost else 0.0
+            total_cost += cost_usd
+            total_time += elapsed_ms
+
+            if t["check"](result):
+                results_table.add_row(str(i), t["name"], "[green]✅ PASS[/green]", f"${cost_usd:.4f}", f"{elapsed_ms/1000:.1f}s")
+                passed += 1
+            else:
+                results_table.add_row(str(i), t["name"], "[yellow]⚠️ CHECK[/yellow]", f"${cost_usd:.4f}", f"{elapsed_ms/1000:.1f}s")
+                failed += 1
+        except Exception as e:
+            elapsed_ms = int((time_mod.monotonic() - start) * 1000)
+            total_time += elapsed_ms
+            results_table.add_row(str(i), t["name"], f"[red]❌ FAIL[/red]", "—", f"{elapsed_ms/1000:.1f}s")
+            console.print(f"    [red]{str(e)[:100]}[/red]")
+            failed += 1
+
+    console.print()
+    console.print(results_table)
+    console.print(f"\n[bold]{'✅' if failed == 0 else '⚠️'} {passed}/{passed+failed} passed[/bold]  ·  ${total_cost:.4f}  ·  {total_time/1000:.1f}s total")
+
+
 if __name__ == "__main__":
     app()

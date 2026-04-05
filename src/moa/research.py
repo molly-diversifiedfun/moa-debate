@@ -39,8 +39,9 @@ class FirecrawlProvider:
         self.api_key = api_key
 
     async def search(self, query: str, max_results: int = 3) -> List[SearchResult]:
-        """Search via firecrawl-py. Returns results with markdown content included."""
-        from firecrawl import FirecrawlApp, ScrapeOptions
+        """Search via firecrawl-py v2. Returns results with markdown content included."""
+        from firecrawl import FirecrawlApp
+        from firecrawl.v2.types import ScrapeOptions
 
         app = FirecrawlApp(api_key=self.api_key)
         loop = asyncio.get_event_loop()
@@ -58,13 +59,14 @@ class FirecrawlProvider:
             return []
 
         results = []
-        for r in resp.get("data") or []:
-            metadata = r.get("metadata") or {}
+        for doc in resp.web or []:
+            metadata = doc.metadata or {}
+            # v2 API: Document has .markdown, .metadata (with sourceURL, title, description)
             results.append(SearchResult(
-                url=r.get("url", ""),
-                title=metadata.get("title", r.get("title", "")),
-                snippet=metadata.get("description", r.get("description", "")),
-                content=(r.get("markdown") or "")[:4096],
+                url=getattr(metadata, "source_url", "") or getattr(metadata, "sourceURL", "") or "",
+                title=getattr(metadata, "title", "") or "",
+                snippet=getattr(metadata, "description", "") or "",
+                content=(doc.markdown or "")[:4096],
             ))
         return results
 
@@ -78,9 +80,9 @@ class FirecrawlProvider:
         try:
             result = await loop.run_in_executor(
                 None,
-                lambda: app.scrape_url(url, formats=["markdown"]),
+                lambda: app.scrape(url, formats=["markdown"]),
             )
-            return result.get("markdown", "")
+            return result.markdown or ""
         except Exception:
             return ""
 
