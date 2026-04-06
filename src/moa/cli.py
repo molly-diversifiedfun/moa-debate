@@ -6,6 +6,7 @@ import subprocess
 import sys
 import warnings
 from pathlib import Path
+from typing import Optional
 
 # Suppress urllib3 NotOpenSSLWarning (Python 3.9 ships LibreSSL, not OpenSSL)
 warnings.filterwarnings("ignore", message=".*NotOpenSSLWarning.*")
