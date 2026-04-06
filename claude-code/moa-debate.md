@@ -40,9 +40,12 @@ Peer debate output sections:
 Features:
 - **Research-grounded** — both sides get web sources (Firecrawl + DuckDuckGo fallback), cite evidence, judge verifies claims
 - **Circuit breakers** — auto-skips models with recent failures, picks next-strongest
-- **Decision templates** — `--template hire` adds domain-specific judge criteria (e.g., Schmidt & Hunter research for hiring)
+- **Decision templates** — `--template hire` adds domain-specific judge criteria. Custom templates: `~/.moa/templates/*.yaml`
+- **Decision tree** — every adversarial verdict includes an ASCII decision tree you can walk step by step
 - **Auto-extension** — if positions are still shifting after N rounds, extends up to 2 more
 - **Convergence detection** — early exit when agreement exceeds 70%
+- **HTML export** — `--export html` creates a shareable self-contained HTML file with collapsible rounds
+- **Outcome tracking** — auto-logs verdicts after adversarial debates. Tag results later with `moa outcome tag`
 - **Debate transcripts** — saved to `~/.moa/debates/` for later review
 
 When to recommend adversarial vs peer:
@@ -57,7 +60,11 @@ Best for:
 - Architecture: `/moa-debate "Event sourcing vs CRUD?"`
 - Go/no-go: `/moa-debate --style adversarial "Should we quit and build this?"`
 - Persona debates: `/moa-debate --persona "DHH,Kelsey Hightower" "Do we need K8s?"`
+- Export: `/moa-debate --style adversarial --export html "Should we raise funding?"`
 
 Related commands:
+- `moa outcome list --stats` — accuracy breakdown of past debate verdicts
+- `moa outcome tag <id> --outcome "..." --result good` — close the feedback loop
 - `moa health` — check model circuit breaker status
-- `moa templates` — list available decision templates
+- `moa templates` — list available decision templates (built-in + custom YAML)
+- `moa templates validate path.yaml` — validate a custom template file

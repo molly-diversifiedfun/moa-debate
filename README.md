@@ -223,6 +223,9 @@ moa ask --persona product "..."             # all personas in a category
 moa ask "..."           # Multi-model query (adaptive routing)
 moa debate "..."        # Multi-round debate with challenge rounds
 moa review --staged     # Expert panel code review
+moa outcome list        # View debate outcomes + accuracy stats
+moa outcome log <id>    # Record what you decided
+moa outcome tag <id>    # Record what happened (closes feedback loop)
 moa status              # Model roster, API keys, budget
 moa verify              # Ping all models
 moa health              # Circuit breaker status for all models
@@ -338,8 +341,10 @@ src/moa/
 ├── debate.py        # Peer + adversarial debate (composable pipeline)
 ├── review.py        # Expert panel code review
 ├── events.py        # Typed event system (EventType enum + DebateEvent)
+├── export.py        # Shareable transcript export (HTML + markdown)
+├── outcomes.py      # Outcome tracking (verdict → decision → result)
 ├── models.py        # 14 models, 4 tiers, 14 personas, reviewer roles
-├── templates.py     # Decision templates (hire, build, invest)
+├── templates.py     # Decision templates (built-in + custom YAML)
 ├── health.py        # Circuit breakers, health-aware model selection
 ├── research.py      # SearchProvider protocol, Firecrawl + DuckDuckGo
 ├── prompts.py       # All prompt templates
@@ -367,7 +372,7 @@ All configuration via environment variables. No config files to manage.
 | `CACHE_TTL_HOURS` | 1 | Response cache TTL |
 | `MOA_SERVER_KEY` | — | API server auth key |
 
-State files live in `~/.moa/`: usage.json, history.jsonl, cache/cache.db, sessions/, health.json, debates/.
+State files live in `~/.moa/`: usage.json, history.jsonl, cache/cache.db, sessions/, health.json, debates/, outcomes.jsonl, templates/.
 
 ## All Flags
 
@@ -376,7 +381,8 @@ State files live in `~/.moa/`: usage.json, history.jsonl, cache/cache.db, sessio
 | `--persona` | ask, debate, review | — | Persona names or category |
 | `--research` | ask | `auto` | `auto`, `lite`, `deep`, `off` |
 | `--style` | debate | `peer` | `peer`, `adversarial` |
-| `--template` | debate | auto-detect | `hire`, `build`, `invest` |
+| `--template` | debate | auto-detect | `hire`, `build`, `invest`, or custom YAML |
+| `--export` | debate | — | Export transcript: `html` or `md` |
 | `--discourse` | review | off | Reviewers react to each other |
 | `--personas` | review | off | Use code review personas |
 | `--layers` | ask | 1 | Aggregation layers (1-3) |
