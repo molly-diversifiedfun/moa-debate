@@ -56,6 +56,9 @@ cd moa-debate
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
+# Optional but recommended: install git hooks (cli import check + pre-push tests)
+./hooks/install.sh
+
 # Set API keys (at least one provider required, more = better)
 export ANTHROPIC_API_KEY=sk-ant-...
 export OPENAI_API_KEY=sk-...
@@ -196,7 +199,9 @@ moa debate --style adversarial --template build "Build auth in-house or use Auth
 moa debate --persona "DHH,Kelsey Hightower" "Do we need Kubernetes?"
 ```
 
-Debates are **research-grounded** — both sides get real web sources and cite evidence, and the judge verifies claims. **Circuit breakers** auto-skip broken models and pick the next-strongest. **Decision templates** (`--template hire|build|invest`) add domain-specific judge criteria. Auto-extends rounds if positions are still shifting, exits early on convergence.
+Debates are **research-grounded** — both sides get real web sources and cite evidence, and the judge verifies claims. **Circuit breakers** auto-skip broken models and pick the next-strongest. **Decision templates** add domain-specific judge criteria — 3 built-in (`hire`, `build`, `invest`) plus 6 shippable examples (`startup`, `launch`, `strategy`, `acquire`, `pivot`, `sunset`) you can install with `moa templates --install-examples`. Auto-extends rounds if positions are still shifting, exits early on convergence.
+
+**Both peer and adversarial debates use the same composable pipeline pattern** — `state → stages → format_result` — so swapping or extending stages is a single function definition, not a rewrite.
 
 For the full situational guide with 12 real scenarios, see **[docs/USE_CASES.md](docs/USE_CASES.md)**.
 
@@ -217,10 +222,21 @@ moa ask --persona product "..."             # all personas in a category
 
 **Who are these people?** See **[docs/PERSONAS.md](docs/PERSONAS.md)** — each persona's philosophy, what they catch that others miss, key works, and reference links.
 
+### Compare a single model vs the ensemble
+
+```bash
+moa compare "Should we use Postgres or MongoDB for a 5-person team?"
+moa compare --single claude-sonnet --ensemble pro "Build auth in-house?"
+moa compare -e ultra "Is microservices the right architecture?"
+```
+
+`moa compare` runs your single chosen model AND an ensemble in parallel on the same question, then shows them side-by-side with an agreement score, pairwise ranking, and cost delta. Useful for seeing whether the ensemble is actually adding value over a single strong model — and for sales-style demos.
+
 ### All Commands
 
 ```bash
 moa ask "..."           # Multi-model query (adaptive routing)
+moa compare "..."       # Single model vs ensemble side-by-side
 moa debate "..."        # Multi-round debate with challenge rounds
 moa review --staged     # Expert panel code review
 moa outcome list        # View debate outcomes + accuracy stats
@@ -230,6 +246,7 @@ moa status              # Model roster, API keys, budget
 moa verify              # Ping all models
 moa health              # Circuit breaker status for all models
 moa templates           # List available decision templates
+moa templates --install-examples  # Copy 6 example templates to ~/.moa/templates/
 moa test                # Automated smoke tests
 moa history --cost      # Spend tracking
 moa serve               # HTTP API server
@@ -334,11 +351,11 @@ All system prompts live in `src/moa/prompts.py` — edit them directly to change
 
 ```
 src/moa/
-├── cli.py           # Typer CLI (11 commands)
+├── cli.py           # Typer CLI (13 commands)
 ├── engine.py        # Re-export layer (backward compat)
 ├── orchestrator.py  # Model calls, cost tracking, agreement, ranking
-├── adaptive.py      # Adaptive routing, MoA, cascade, deep research
-├── debate.py        # Peer + adversarial debate (composable pipeline)
+├── adaptive.py      # Adaptive routing, MoA, cascade, deep research, compare
+├── debate.py        # Peer + adversarial debate (both composable pipelines)
 ├── review.py        # Expert panel code review
 ├── events.py        # Typed event system (EventType enum + DebateEvent)
 ├── export.py        # Shareable transcript export (HTML + markdown)
@@ -355,6 +372,13 @@ src/moa/
 ├── budget.py        # Daily spend cap ($5/day default)
 ├── history.py       # JSONL query logging
 └── verify.py        # Model connectivity test
+
+templates/examples/  # 6 shippable decision templates (install via CLI)
+hooks/               # Tracked git hooks (./hooks/install.sh)
+tests/
+├── quality_checks.py        # Reusable assertions: structural / invariants / LLM-judge rubric
+├── test_e2e.py              # 4-tier e2e: T1 free / T2 ~$0.004 / T3 ~$0.60 / T3.5 ~$0.10
+└── test_*.py                # 197 mock tests across 10 files
 ```
 
 ## Configuration
@@ -389,6 +413,9 @@ State files live in `~/.moa/`: usage.json, history.jsonl, cache/cache.db, sessio
 | `--tier` | ask, debate | auto | `flash`, `lite`, `pro`, `ultra` |
 | `--context` | ask, debate | — | Path for context injection |
 | `--rounds` | debate | 2 | Debate rounds |
+| `--single` | compare | `auto` | Single model name (or `auto` for best available) |
+| `--ensemble` | compare | `lite` | Ensemble tier: `flash`, `lite`, `pro`, `ultra` |
+| `--install-examples` | templates | off | Copy 6 example templates to `~/.moa/templates/` |
 | `--raw` | all | off | Plain text (for piping) |
 | `--no-cache` | ask | off | Bypass cache |
 | `--debug` | ask | off | Show full prompt sent to models |
@@ -433,11 +460,60 @@ moa serve --port 8787
 ## Testing
 
 ```bash
-pytest          # 26 unit tests
-moa test        # 5 live smoke tests (~$0.50)
-moa test --full # 8 extended tests (~$1)
-moa verify      # Ping all models
+pytest                     # 197 mock tests, ~7s, free
+moa verify                 # Ping all models (cheap)
+moa test                   # 5 live smoke tests (~$0.50)
+moa test --full            # 8 extended tests (~$1)
 ```
+
+### 4-tier e2e framework
+
+`tests/test_e2e.py` is gated by environment variables so CI runs free and live runs are explicit:
+
+```bash
+pytest tests/test_e2e.py                                       # T1: 17 CLI smoke tests (free)
+MOA_E2E_LIVE=1 pytest tests/test_e2e.py                        # +T2: 4 live flash tests (~$0.004)
+MOA_E2E_EXPENSIVE=1 MOA_E2E_LIVE=1 pytest tests/test_e2e.py    # +T3: 6 live debate/compare tests (~$0.60)
+MOA_E2E_RUBRIC=1 MOA_E2E_EXPENSIVE=1 MOA_E2E_LIVE=1 pytest tests/test_e2e.py   # +T3.5: 2 LLM-as-judge rubric tests (~$0.10)
+```
+
+| Tier | Tests | Cost | Gate | Catches |
+|------|-------|------|------|---------|
+| T1 | 17 | free | always runs | Typer wiring, error paths, file I/O |
+| T2 | 4 | ~$0.004 | `MOA_E2E_LIVE=1` | Live single-model calls, model identifier drift |
+| T3 | 6 | ~$0.60 | `MOA_E2E_EXPENSIVE=1` | Full debate/compare/export end-to-end |
+| T3.5 | 2 | ~$0.10 | `MOA_E2E_RUBRIC=1` | Semantic quality (LLM judge scores 1-5) |
+
+### Quality checks library
+
+`tests/quality_checks.py` provides reusable assertions across three layers:
+
+- **Structural** (free, deterministic): required judge sections (TL;DR, Confidence, Decision Tree, Bottom Line), decision tree depth ≤3, confidence extractable, query vocabulary overlap
+- **Invariants** (free): per-tier cost ceilings, rounds evolved (Jaccard delta ≥15%), provider diversity, ≥2 models succeeded
+- **Rubric** (~$0.002/call, opt-in): cheap judge scores 1-5 on `answers_question` / `considers_tradeoffs` / `actionable` / `specific_not_vague`; fails if any <3
+
+Usage in your own tests:
+
+```python
+from tests.quality_checks import assert_adversarial_quality, assert_peer_quality
+
+result = await run_adversarial_pipeline(query, ...)
+confidence = assert_adversarial_quality(result, original_query=query, tier="lite")
+```
+
+### Git hooks (recommended)
+
+Install once after cloning:
+
+```bash
+./hooks/install.sh
+```
+
+This symlinks two hooks into `.git/hooks/`:
+- **pre-commit** (~1s): if `src/moa/cli.py` is staged, verifies it imports cleanly. Catches missing imports, syntax errors, name shadowing.
+- **pre-push** (~7s): runs the full `pytest -q` suite. Blocks the push if anything fails.
+
+Bypass with `git commit/push --no-verify` when needed.
 
 ## Acknowledgments
 
