@@ -1,13 +1,13 @@
 # moa-debate
 
-**Ask one AI a question, you get one perspective. Ask fourteen, you get the truth.**
+**One LLM gives one guess. moa-debate picks 3-5 models from different providers for every question, then makes them debate — or searches the web when they disagree.**
 
 ![tests](https://img.shields.io/badge/tests-197%20passing-brightgreen)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-purple)
-![models](https://img.shields.io/badge/models-14-orange)
+![roster](https://img.shields.io/badge/model%20roster-14-orange)
 
-moa-debate is a CLI tool that runs your questions through multiple AI models in parallel — GPT, Claude, Gemini, DeepSeek, Grok, Llama — and synthesizes their responses into a single, more reliable answer. When models disagree, it automatically searches the web to ground the response in real documentation.
+moa-debate is a CLI tool that runs your questions across 3-5 LLMs from different providers (GPT, Claude, Gemini, optionally DeepSeek/Grok/Llama), then synthesizes their responses into a single more reliable answer. Adaptive routing picks the right model count per query — 1 cheap model for factoids, up to 5 frontier models for high-stakes decisions. When they disagree, it automatically searches the web to ground the response in real sources.
 
 ![demo](demo.gif)
 

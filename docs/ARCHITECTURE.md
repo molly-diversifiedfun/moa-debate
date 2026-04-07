@@ -29,20 +29,34 @@ Output: Answer + Confidence + Agreement/Disagreement + Attribution + Conditional
 
 ---
 
-## 14 models, 6 providers
+## 14-model roster, 3-6 models per query
 
-**Core** (need at least one): Anthropic (Opus, Sonnet, Haiku), OpenAI (GPT-5.4, GPT-4.1, 4o-mini), Google (Gemini 3.1 Pro, 2.5 Pro, Flash)
+The full roster is **14 models across 6 providers**. Any single query uses **1-5 of them** depending on tier and which API keys are set. The system never hits all 14 at once — that would cost ~$2 per query and add nothing over 5 well-chosen models.
 
-**Optional** (auto-included when keys are set): DeepSeek (V3, R1), xAI (Grok 4, 4.1-fast), Together/Meta (Llama-4-Maverick)
+**Core providers** (need at least one): Anthropic (Opus, Sonnet, Haiku), OpenAI (GPT-5.4, GPT-4.1, 4o-mini), Google (Gemini 3.1 Pro, 2.5 Pro, Flash)
+
+**Optional providers** (auto-included when keys are set): DeepSeek (V3, R1), xAI (Grok 4, 4.1-fast), Together/Meta (Llama-4-Maverick)
 
 ## 4 tiers
 
-| Tier | Models | Aggregator | Cost | When |
-|------|--------|-----------|------|------|
-| flash | Gemini Flash | none | ~$0.001 | Factoids, lookups |
-| lite | 4o-mini, Flash | Sonnet | ~$0.05 | Standard questions |
-| pro | GPT-4.1, Gemini Pro, Haiku | Sonnet | ~$0.09 | Reasoning, analysis |
-| ultra | GPT-5.4, Gemini 3.1, Sonnet | Opus | ~$0.25 | High-stakes decisions |
+| Tier | Per-query models | Aggregator | Cost | When |
+|------|------------------|-----------|------|------|
+| flash | 1 (Gemini Flash) | none | ~$0.001 | Factoids, lookups |
+| lite | 2-5 proposers + 1 aggregator | Sonnet | ~$0.05 | Standard questions |
+| pro | 3-5 proposers + 1 aggregator | Sonnet | ~$0.09 | Reasoning, analysis |
+| ultra | 3-5 proposers + 1 aggregator | Opus | ~$0.25 | High-stakes decisions |
+
+The "2-5" / "3-5" range is core proposers + however many optional providers have keys set. With only the three core providers (Anthropic, OpenAI, Google), a typical lite query hits 3 models total (2 proposers + 1 aggregator). Add a DeepSeek or Grok key and the same query hits 4-6 models for more provider diversity.
+
+**Per-query model count by mode:**
+- `moa ask --tier flash` → 1 model
+- `moa ask --tier lite` → 3-6 models
+- `moa ask --tier pro` → 4-6 models
+- `moa ask --tier ultra` → 4-6 models
+- `moa debate --style adversarial` → 2 debaters + 1 judge per round, picks strongest models across all tiers
+- `moa debate --style peer` → 2-5 proposers + 1 judge per round
+- `moa review --staged` → 4 specialist reviewers (security, architecture, performance, correctness)
+- `moa compare` → 1 single model + lite ensemble in parallel
 
 ---
 
