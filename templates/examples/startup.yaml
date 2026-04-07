@@ -1,0 +1,48 @@
+name: startup
+description: "Startup decisions — launch timing, market entry, founding team, funding strategy"
+keywords:
+  - startup
+  - founding
+  - co-founder
+  - launch
+  - MVP
+  - market entry
+  - bootstrap
+  - raise
+  - seed round
+  - venture
+  - YC
+
+debater_context: |
+  This is a startup strategy decision. The stakes include personal financial risk,
+  opportunity cost of 2-5 years of founders' lives, and the compounding effect of
+  early decisions on long-term outcomes. Speed matters, but wrong bets are expensive.
+
+judge_addendum: |
+  Domain-specific evaluation for startup decisions:
+
+  Evaluate on these criteria:
+  - **Market timing**: Is the market ready now, or is this a "too early" trap?
+    Check for existing demand signals (searches, workarounds, adjacent products).
+  - **Founder-market fit**: Do the founders have unfair advantages in this space?
+    Domain expertise, network, distribution, or technical edge?
+  - **Capital efficiency**: How far can $X get you? What's the cost to reach
+    meaningful validation (not revenue, but proof of demand)?
+  - **Competitive moat timeline**: How long before a well-funded competitor copies
+    this? If <6 months, the idea needs a distribution or data moat.
+  - **Reversibility**: Can the founders pivot or exit gracefully if this doesn't work?
+
+  Decision tree should check:
+  1. Can you validate the core hypothesis in <4 weeks with <$5K? If yes, do that first.
+  2. Do you have 12-18 months of personal runway? If no, that changes everything.
+  3. Is this a vitamin or a painkiller? Painkillers get funded; vitamins struggle.
+
+  De-risk steps must include:
+  - Talk to 20 potential customers before writing code
+  - Build the smallest thing that tests demand (landing page, waitlist, concierge MVP)
+  - Set a "kill date" — if X hasn't happened by Y date, walk away
+  - Calculate your personal burn rate and the real cost of this bet
+
+research_queries:
+  - "startup validation framework lean startup"
+  - "startup failure reasons data"

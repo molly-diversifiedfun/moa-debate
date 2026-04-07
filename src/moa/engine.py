@@ -17,12 +17,13 @@ from .orchestrator import (  # noqa: F401
     _update_cost,
 )
 
-# Adaptive routing, MoA, cascade, deep research
+# Adaptive routing, MoA, cascade, deep research, compare
 from .adaptive import (  # noqa: F401
     run_adaptive,
     run_moa,
     run_cascade,
     run_deep_research,
+    run_compare,
     classify_query,
     get_session_context,
 )
@@ -31,4 +32,5 @@ from .adaptive import (  # noqa: F401
 from .review import run_expert_review  # noqa: F401
 
 # Debate
-from .debate import run_debate  # noqa: F401
+from .debate import run_debate, run_peer_pipeline, run_adversarial_pipeline  # noqa: F401
+from .debate import PeerDebateState, DebateState, PEER_PIPELINE, ADVERSARIAL_PIPELINE  # noqa: F401

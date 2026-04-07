@@ -40,7 +40,7 @@ def _suppress_ssl_errors_on_exit():
     """Redirect stderr at exit to suppress Python 3.9 SSL transport cleanup noise."""
     import os
     sys.stderr = open(os.devnull, "w")
-from .engine import run_moa, run_expert_review, run_debate, run_cascade, run_adaptive, run_deep_research
+from .engine import run_moa, run_expert_review, run_debate, run_cascade, run_adaptive, run_deep_research, run_compare
 from .models import TIERS, REVIEWER_ROLES, ALL_MODELS, CORE_MODELS, OPTIONAL_MODELS, available_models, ADAPTIVE_TIERS
 from .cache import get_cached, set_cached
 from .history import log_query, get_history, get_history_stats
@@ -218,9 +218,15 @@ def ask(
             console.print(f"[dim]📁 Injected context from: {context}[/dim]")
         query = f"{ctx}\n\nQuestion: {query}"
     elif not sys.stdin.isatty():
-        # Only read stdin if there's actually data waiting (avoid hanging on piped output)
+        # Only read stdin if there's actually data waiting (avoid hanging on piped output).
+        # Guard against non-fd streams (e.g. test runners, wrapped StringIO) which
+        # raise UnsupportedOperation on select().
         import select
-        if select.select([sys.stdin], [], [], 0.1)[0]:
+        try:
+            has_input = bool(select.select([sys.stdin], [], [], 0.1)[0])
+        except (OSError, ValueError):
+            has_input = False
+        if has_input:
             stdin_content = sys.stdin.read().strip()
             if stdin_content:
                 query = f"[PIPED CONTEXT]\n{stdin_content}\n[/PIPED CONTEXT]\n\nQuestion: {query}"
@@ -862,10 +868,37 @@ def _write_debate_transcript(result: dict, query: str, rounds: int, style: str):
 def templates(
     validate: Optional[str] = typer.Argument(None, help="Path to a YAML template to validate"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show keywords and research queries"),
+    install_examples: bool = typer.Option(False, "--install-examples", help="Copy example templates to ~/.moa/templates/"),
 ):
     """List available decision templates, or validate a YAML template file."""
+    if install_examples:
+        import shutil
+        examples_dir = Path(__file__).parent.parent.parent / "templates" / "examples"
+        target_dir = MOA_HOME / "templates"
+        ensure_moa_home()
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        if not examples_dir.is_dir():
+            console.print("[red]Example templates not found in package.[/red]")
+            raise typer.Exit(1)
+
+        installed = 0
+        for src in sorted(examples_dir.glob("*.yaml")):
+            dest = target_dir / src.name
+            if dest.exists():
+                console.print(f"[yellow]  skip: {src.name} (already exists)[/yellow]")
+                continue
+            shutil.copy2(src, dest)
+            console.print(f"[green]  installed: {src.name}[/green]")
+            installed += 1
+
+        if installed:
+            console.print(f"\n[bold green]Installed {installed} example templates to {target_dir}[/bold green]")
+        else:
+            console.print(f"\n[dim]All examples already installed in {target_dir}[/dim]")
+        return
+
     if validate:
-        from pathlib import Path
         from .templates import validate_template_file
         path = Path(validate)
         ok, errors = validate_template_file(path)
@@ -1353,6 +1386,115 @@ def outcome(
         return
 
     console.print(f"[red]Unknown action: {action}. Use 'list', 'log', or 'tag'.[/red]")
+
+
+@app.command()
+def compare(
+    query: str = typer.Argument(..., help="Question to compare"),
+    single: str = typer.Option("auto", "--single", "-s", help="Single model name (or 'auto' for best available)"),
+    ensemble: str = typer.Option("lite", "--ensemble", "-e", help="Ensemble tier: flash, lite, pro, ultra"),
+    raw: bool = typer.Option(False, "--raw", help="Output raw JSON"),
+):
+    """Compare a single model vs ensemble on the same question.
+
+    Shows both responses side-by-side with agreement score, cost delta,
+    and which response was ranked higher.
+
+    Examples:
+      moa compare "Should we use Postgres or MongoDB?"
+      moa compare --single claude-sonnet-4-20250514 --ensemble pro "Build in-house or buy SaaS?"
+      moa compare -e ultra "Is microservices the right architecture?"
+    """
+    from .models import MODEL_BY_NAME, ALL_MODELS
+
+    # Resolve single model
+    if single == "auto":
+        # Pick the best available model (highest output cost = most capable)
+        avail = [m for m in ALL_MODELS if m.available]
+        if not avail:
+            console.print("[red]No models available. Set at least one API key.[/red]")
+            raise typer.Exit(1)
+        model = sorted(avail, key=lambda m: m.output_cost_per_mtok, reverse=True)[0]
+    else:
+        # Try exact match first, then partial match
+        model = MODEL_BY_NAME.get(single)
+        if not model:
+            # Partial match: user might say "claude-sonnet" instead of full LiteLLM name
+            matches = [m for m in ALL_MODELS if single in m.name]
+            if len(matches) == 1:
+                model = matches[0]
+            elif len(matches) > 1:
+                names = [m.name for m in matches]
+                console.print(f"[red]Ambiguous model name '{single}'. Matches: {names}[/red]")
+                raise typer.Exit(1)
+            else:
+                console.print(f"[red]Unknown model: {single}[/red]")
+                console.print(f"[dim]Available: {[m.name for m in ALL_MODELS if m.available]}[/dim]")
+                raise typer.Exit(1)
+
+        if not model.available:
+            console.print(f"[red]Model {model.name} not available (missing {model.env_key})[/red]")
+            raise typer.Exit(1)
+
+    short_name = model.name.split("/")[-1] if "/" in model.name else model.name
+    console.print(f"\n[bold]Comparing:[/bold] [cyan]{short_name}[/cyan] vs [magenta]{ensemble}[/magenta] ensemble")
+    console.print(f"[dim]Query: {query[:100]}{'...' if len(query) > 100 else ''}[/dim]\n")
+
+    import time as _time
+    start = _time.monotonic()
+
+    with console.status("[bold cyan]Running single model + ensemble in parallel...", spinner="dots"):
+        result = _run_async(run_compare(query, single_model=model, ensemble_tier=ensemble))
+
+    if raw:
+        import json
+        # Make cost serializable
+        output = {k: v for k, v in result.items()}
+        console.print(json.dumps(output, indent=2, default=str))
+        return
+
+    elapsed = _time.monotonic() - start
+
+    # Side-by-side display
+    single_panel = Panel(
+        Markdown(result["single_response"]),
+        title=f"[cyan]{result['single_model']}[/cyan]",
+        subtitle=f"${result['single_cost_usd']:.4f}",
+        border_style="cyan",
+        width=console.width,
+    )
+
+    ensemble_models_str = ", ".join(result["ensemble_models"][:5])
+    ensemble_panel = Panel(
+        Markdown(result["ensemble_response"]),
+        title=f"[magenta]{result['ensemble_tier']} ensemble[/magenta]",
+        subtitle=f"${result['ensemble_cost_usd']:.4f} ({ensemble_models_str})",
+        border_style="magenta",
+        width=console.width,
+    )
+
+    console.print(single_panel)
+    console.print(ensemble_panel)
+
+    # Comparison summary
+    score = result["agreement_score"]
+    filled = int(score * 20)
+    bar = "█" * filled + "░" * (20 - filled)
+
+    winner = result["best_source"]
+    winner_style = "cyan" if winner == "single" else "magenta"
+    winner_label = result["single_model"] if winner == "single" else f"{result['ensemble_tier']} ensemble"
+
+    delta = result["cost_delta_usd"]
+    delta_sign = "+" if delta > 0 else ""
+    delta_label = "more" if delta > 0 else "less"
+
+    console.print(f"\n[bold]Comparison Summary[/bold]")
+    console.print(f"  Agreement:  [{bar}] {score:.0%}")
+    console.print(f"  Best rated: [{winner_style}]{winner_label}[/{winner_style}]")
+    console.print(f"  Cost delta: {delta_sign}${abs(delta):.4f} ({ensemble} ensemble costs {delta_label})")
+    console.print(f"  Total time: {elapsed:.1f}s")
+    console.print()
 
 
 if __name__ == "__main__":

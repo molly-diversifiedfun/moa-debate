@@ -1,0 +1,51 @@
+name: pivot
+description: "Pivot decisions — when to change direction, what to keep, how to transition"
+keywords:
+  - pivot
+  - pivoting
+  - change direction
+  - restart
+  - rebrand
+  - new direction
+  - kill the project
+  - start over
+  - abandon
+  - sunk cost
+
+debater_context: |
+  This is a pivot/direction-change decision. Sunk cost bias is the biggest enemy
+  here — what you've already invested is irrelevant to the forward-looking decision.
+  What matters is: given where you are now, what's the best use of your next 6 months?
+
+judge_addendum: |
+  Domain-specific evaluation for pivot decisions:
+
+  Evaluate on these criteria:
+  - **Signal strength**: Is the data clearly saying "this isn't working" or is it
+    ambiguous? Distinguish between "not enough time" and "wrong direction."
+    Look for: flat retention curves, declining engagement, inability to find PMF after
+    6+ months of iteration.
+  - **Transferable assets**: What from the current direction carries forward?
+    Team expertise, codebase, customer relationships, brand equity, data.
+    A good pivot leverages 40%+ of existing assets.
+  - **New direction conviction**: Is the pivot target based on customer discovery
+    or founder intuition? Customer-informed pivots succeed 3x more often.
+  - **Team alignment**: Is the team energized by the new direction or demoralized?
+    A pivot with a burned-out team is a restart with baggage.
+  - **Runway math**: How many months of runway remain? Pivots need 12+ months
+    to reach new traction. <6 months = you're not pivoting, you're panicking.
+
+  Decision tree should check:
+  1. Have you talked to 10+ users/customers about why the current direction isn't working?
+  2. Can you articulate the new direction in one sentence that makes a customer say "yes, I need that"?
+  3. Do you have 12+ months of runway to execute the pivot? If no, fundraise or cut costs first.
+
+  De-risk steps must include:
+  - Run a 2-week "pivot sprint" to validate the new direction before committing
+  - Define the minimum signal of traction you need within 90 days
+  - Have an honest conversation with the team about what's changing and why
+  - Preserve the option to return to the current direction for 60 days (don't burn bridges)
+
+research_queries:
+  - "startup pivot success factors data"
+  - "when to pivot product market fit signals"

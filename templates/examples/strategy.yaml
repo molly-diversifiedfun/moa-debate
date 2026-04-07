@@ -1,0 +1,49 @@
+name: strategy
+description: "Strategic decisions — market positioning, pricing, partnerships, competitive response"
+keywords:
+  - strategy
+  - strategic
+  - positioning
+  - pricing
+  - partnership
+  - competitive
+  - market share
+  - go-to-market
+  - GTM
+  - differentiation
+  - moat
+
+debater_context: |
+  This is a strategic business decision. What matters is the second-order effects
+  and competitive dynamics, not just the immediate outcome. Every strategic choice
+  closes some doors and opens others.
+
+judge_addendum: |
+  Domain-specific evaluation for strategic decisions:
+
+  Evaluate on these criteria:
+  - **Competitive response**: What will competitors do in response to this move?
+    Play out 2-3 moves ahead. The best strategy accounts for rational counter-moves.
+  - **Reversibility cost**: How expensive is it to unwind this decision in 12 months?
+    Pricing changes are easy; partnership commitments are hard.
+  - **Second-order effects**: What does this decision make easier or harder downstream?
+    A pricing cut wins deals but anchors expectations.
+  - **Optionality**: Does this choice expand or shrink your future options? Prefer
+    decisions that keep doors open over those that optimize one path.
+  - **Execution complexity**: A brilliant strategy you can't execute is worse than a
+    good strategy you can. Factor in team bandwidth and capability.
+
+  Decision tree should check:
+  1. Is this reversible within 90 days? If yes, bias toward action and learning.
+  2. Does this require new capabilities you don't have? If yes, factor in build/buy/hire time.
+  3. What's the cost of doing nothing for 6 months? If low, maybe the timing isn't right.
+
+  De-risk steps must include:
+  - Test the strategy at small scale before full commitment
+  - Define 3 leading indicators you'll track weekly to know if it's working
+  - Identify the "trip wire" — the signal that means you should reverse course
+  - Get input from someone who's executed a similar strategy (not just theorized about it)
+
+research_queries:
+  - "competitive strategy frameworks Porter"
+  - "strategic decision making under uncertainty"

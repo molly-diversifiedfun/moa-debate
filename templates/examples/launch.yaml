@@ -1,0 +1,48 @@
+name: launch
+description: "Launch timing decisions — when to ship, soft vs hard launch, beta strategies"
+keywords:
+  - launch
+  - ship it
+  - release
+  - go live
+  - beta
+  - soft launch
+  - hard launch
+  - public launch
+  - ready to ship
+  - launch date
+
+debater_context: |
+  This is a launch timing decision. The tension is between shipping too early
+  (damaging first impressions) and shipping too late (missing the window, over-polishing).
+  First impressions matter for B2C; iteration speed matters for B2B.
+
+judge_addendum: |
+  Domain-specific evaluation for launch timing decisions:
+
+  Evaluate on these criteria:
+  - **Minimum viable quality**: Does the product clear the "would I tell a friend about this?"
+    bar? Below that, launching burns your best marketing channel (word of mouth).
+  - **Competitive window**: Is someone else about to ship something similar?
+    If yes, being first with 80% quality beats being second with 100%.
+  - **Feedback loop value**: What will you learn from real users that you can't learn
+    from more building? If the biggest unknowns are market-facing, ship sooner.
+  - **Audience size**: Soft launch to 100 users is nearly free; ProductHunt launch
+    to 10K is a one-time shot. Scale the launch to the product's readiness.
+  - **Recovery cost**: How hard is it to fix a bad first impression with this audience?
+    Enterprise buyers have long memories; consumer audiences forget in 2 weeks.
+
+  Decision tree should check:
+  1. Is the core value proposition working for at least 5 real users? If no, don't launch publicly.
+  2. Can you fix critical bugs within 48 hours of discovery? If no, your ops aren't ready.
+  3. Is this a one-shot audience (press, ProductHunt) or a gradual ramp? One-shot needs more polish.
+
+  De-risk steps must include:
+  - Soft launch to a small, forgiving audience first (friends, beta list, single community)
+  - Instrument everything — you need to know what users do in the first 5 minutes
+  - Have a "launch week" bug fix process ready (daily deploys, fast response)
+  - Write the launch post/announcement before deciding — if you can't make it compelling, you're not ready
+
+research_queries:
+  - "product launch strategy timing best practices"
+  - "soft launch vs hard launch comparison data"

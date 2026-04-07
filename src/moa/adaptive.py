@@ -720,3 +720,76 @@ async def run_deep_research(query: str) -> Dict[str, Any]:
         "latency_ms": elapsed,
         "research_steps": progress_updates,
     }
+
+
+# ═════════��═══════════════════════════════���════════════════════════════════════
+#  COMPARE — single model vs ensemble side-by-side
+# ═══════════════════���════════════��═════════════════════════════════════════════
+
+async def run_compare(
+    query: str,
+    single_model: "ModelConfig",
+    ensemble_tier: str = "lite",
+) -> Dict[str, Any]:
+    """Run a single model and an ensemble on the same query, compare results.
+
+    Returns structured comparison with both responses, agreement score,
+    cost delta, and which source was ranked higher.
+    """
+    _check_budget_or_raise()
+
+    start = time.monotonic()
+
+    # Run both in parallel
+    single_task = call_model(
+        single_model,
+        [{"role": "user", "content": query}],
+    )
+    ensemble_task = run_moa(query, tier_name=ensemble_tier)
+
+    single_result, ensemble_result = await asyncio.gather(
+        single_task, ensemble_task,
+    )
+
+    if not single_result:
+        raise RuntimeError(f"Single model {single_model.name} failed to respond.")
+
+    single_response = single_result["content"]
+    ensemble_response = ensemble_result["response"]
+    ensemble_proposals = ensemble_result.get("proposals", [])
+
+    # Agreement between single response and ensemble synthesis
+    all_responses = [single_response, ensemble_response]
+    agreement = compute_agreement(all_responses)
+
+    # Rank: which response is better?
+    ranking = await pairwise_rank(all_responses, ["single", "ensemble"])
+    best_source = "single" if ranking["best_index"] == 0 else "ensemble"
+
+    # Cost tracking
+    single_cost = single_result.get("cost_usd", 0.0)
+    ensemble_cost = ensemble_result["cost"].estimated_cost_usd if ensemble_result.get("cost") else 0.0
+
+    elapsed = int((time.monotonic() - start) * 1000)
+
+    # Record total spend
+    record_spend(single_cost + ensemble_cost)
+
+    return {
+        "single_response": single_response,
+        "ensemble_response": ensemble_response,
+        "single_model": single_model.name.split("/")[-1] if "/" in single_model.name else single_model.name,
+        "ensemble_tier": ensemble_tier,
+        "ensemble_models": ensemble_result.get("model_names", []),
+        "ensemble_proposals": ensemble_proposals,
+        "agreement_score": agreement["score"],
+        "agreement_details": agreement.get("details", ""),
+        "best_source": best_source,
+        "ranking_wins": ranking.get("wins", []),
+        "single_cost_usd": single_cost,
+        "ensemble_cost_usd": ensemble_cost,
+        "cost_delta_usd": ensemble_cost - single_cost,
+        "latency_ms": elapsed,
+        "single_latency_s": single_result.get("latency_s", 0),
+        "ensemble_latency_ms": ensemble_result.get("latency_ms", 0),
+    }

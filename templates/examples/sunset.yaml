@@ -1,0 +1,47 @@
+name: sunset
+description: "Sunset decisions — when to kill a product, feature, or initiative"
+keywords:
+  - sunset
+  - deprecate
+  - end of life
+  - kill
+  - shut down
+  - discontinue
+  - retire
+  - wind down
+  - decommission
+
+debater_context: |
+  This is a sunset/deprecation decision. The hardest part isn't the technical
+  decommissioning — it's the emotional attachment and sunk cost bias. The question
+  is: does this still earn its place in the portfolio given current opportunity costs?
+
+judge_addendum: |
+  Domain-specific evaluation for sunset decisions:
+
+  Evaluate on these criteria:
+  - **Opportunity cost**: What could the team build if they weren't maintaining this?
+    The true cost of keeping something alive is what you can't build instead.
+  - **User dependency**: How many users rely on this, and how painful is their migration?
+    10 power users who'd churn > 1000 casual users who'd shrug.
+  - **Maintenance burden**: Hours per month spent on bugs, security patches, infra,
+    and support tickets. Include the cognitive load of context-switching.
+  - **Revenue impact**: Direct revenue loss + churn risk from dependent customers.
+    If it's <5% of revenue and declining, the math usually favors sunsetting.
+  - **Migration path quality**: Is there a clear alternative for affected users?
+    Sunsetting without a migration path creates lasting resentment.
+
+  Decision tree should check:
+  1. Is usage growing, flat, or declining? Declining + high maintenance = strong sunset signal.
+  2. Does any major customer or contract depend on this? If yes, timeline must accommodate them.
+  3. Can you migrate 80%+ of users to an alternative with reasonable effort? If no, the sunset needs more prep.
+
+  De-risk steps must include:
+  - Announce 90+ days before shutdown (longer for enterprise/API products)
+  - Provide a migration guide and tools, not just a deprecation notice
+  - Offer direct support to top 10 affected users/accounts
+  - Archive the code and data (don't delete — you may need to reference it)
+
+research_queries:
+  - "product sunset best practices communication"
+  - "feature deprecation strategy user migration"

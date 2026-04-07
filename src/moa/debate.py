@@ -60,9 +60,272 @@ class DebateState:
     start_time: float = 0.0
 
 
-# ═════���════════════════════════════════════════════════════════════════════════
-#  PIPELINE STAGES — each takes state, returns state
-# ═════════════════��═══════════════════════════��════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+#  PEER DEBATE STATE — flows through the peer pipeline
+# ══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class PeerDebateState:
+    """Mutable state that flows through peer debate pipeline stages."""
+    # Input
+    query: str
+    rounds: int = 2
+    tier_name: str = "pro"
+    on_progress: Callable = field(default=lambda msg: None, repr=False)
+
+    # Resolved by stages
+    available_models: List[ModelConfig] = field(default_factory=list)
+    current_positions: Dict[str, str] = field(default_factory=dict)
+    challenges_by_model: Dict[str, str] = field(default_factory=dict)
+    all_rounds: List[Dict] = field(default_factory=list)
+    converged_at: Optional[int] = None
+    judge_response: str = ""
+
+    # Tracking
+    cost: Optional[QueryCost] = None
+    model_status: Dict[str, str] = field(default_factory=dict)
+    start_time: float = 0.0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PEER PIPELINE STAGES
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def peer_select_models(state: PeerDebateState) -> PeerDebateState:
+    """Stage 1: Pick models from the requested tier."""
+    tier = TIERS.get(state.tier_name)
+    if not tier:
+        raise ValueError(f"Unknown tier: {state.tier_name}")
+
+    state.available_models = tier.available_proposers
+    if len(state.available_models) < 2:
+        raise RuntimeError("Debate requires at least 2 available models.")
+
+    names = [_short_name(m) for m in state.available_models]
+    state.on_progress(ev.peer_independent(len(state.available_models), names))
+    return state
+
+
+async def peer_independent(state: PeerDebateState) -> PeerDebateState:
+    """Stage 2: All models form independent opinions (Round 0)."""
+    tasks = [
+        call_model(m, [{"role": "user", "content": state.query}])
+        for m in state.available_models
+    ]
+    results = await asyncio.gather(*tasks)
+
+    for model, result in zip(state.available_models, results):
+        short = _short_name(model)
+        if result:
+            state.current_positions[model.name] = result["content"]
+            _update_cost(state.cost, result)
+            state.model_status[short] = f"✅ R0:{result['latency_s']}s"
+        else:
+            state.model_status[short] = "❌ failed R0"
+
+    state.all_rounds.append(dict(state.current_positions))
+
+    if len(state.current_positions) < 2:
+        raise RuntimeError("Less than 2 models responded. Cannot debate.")
+
+    return state
+
+
+async def peer_challenge(state: PeerDebateState) -> PeerDebateState:
+    """Stage 3: Models find flaws in each other's responses."""
+    state.on_progress(ev.peer_challenge())
+
+    challenge_tasks = []
+    challenge_models = []
+
+    for model in state.available_models:
+        if model.name not in state.current_positions:
+            continue
+        others = {k: v for k, v in state.current_positions.items() if k != model.name}
+        if not others:
+            continue
+
+        other_text = format_proposals(
+            list(others.values()),
+            [k.split("/")[-1] for k in others.keys()]
+        )
+        challenge_tasks.append(
+            call_model(model, [
+                {"role": "system", "content": DEBATE_CHALLENGE_SYSTEM.format(other_responses=other_text)},
+                {"role": "user", "content": state.query},
+            ])
+        )
+        challenge_models.append(model)
+
+    challenge_results = await asyncio.gather(*challenge_tasks)
+    for model, result in zip(challenge_models, challenge_results):
+        short = _short_name(model)
+        if result:
+            state.challenges_by_model[model.name] = result["content"]
+            _update_cost(state.cost, result)
+            state.model_status[short] = f"✅ CH:{result['latency_s']}s"
+
+    return state
+
+
+async def peer_revision_rounds(state: PeerDebateState) -> PeerDebateState:
+    """Stage 4: Models revise positions, with convergence checking."""
+    round_messages = [
+        "⚔️  Round {n}: Models read the challenges. Egos bruised. Revising...",
+        "🔄 Round {n}: \"Actually, you make a fair point...\" (or not)",
+        "🤔 Round {n}: Models reconsider. Some dig in. Some fold.",
+    ]
+
+    for round_num in range(1, state.rounds + 1):
+        msg = round_messages[(round_num - 1) % len(round_messages)].format(n=round_num)
+        state.on_progress(ev.peer_revision(round_num, msg))
+
+        revision_tasks = []
+        revision_models = []
+
+        for model in state.available_models:
+            if model.name not in state.current_positions:
+                continue
+            others = {k: v for k, v in state.current_positions.items() if k != model.name}
+            if not others:
+                continue
+
+            other_text = format_proposals(
+                list(others.values()),
+                [k.split("/")[-1] for k in others.keys()]
+            )
+
+            # First revision round: include challenges
+            if round_num == 1 and state.challenges_by_model:
+                relevant_challenges = {
+                    k: v for k, v in state.challenges_by_model.items() if k != model.name
+                }
+                if relevant_challenges:
+                    challenge_text = format_proposals(
+                        list(relevant_challenges.values()),
+                        [k.split("/")[-1] for k in relevant_challenges.keys()]
+                    )
+                    system = DEBATE_REVISION_WITH_CHALLENGES_SYSTEM.format(
+                        challenges=challenge_text,
+                        other_responses=other_text,
+                    )
+                else:
+                    system = DEBATE_ROUND_SYSTEM.format(other_responses=other_text)
+            else:
+                system = DEBATE_ROUND_SYSTEM.format(other_responses=other_text)
+
+            revision_tasks.append(
+                call_model(model, [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": state.query},
+                ])
+            )
+            revision_models.append(model)
+
+        results = await asyncio.gather(*revision_tasks)
+        for model, result in zip(revision_models, results):
+            short = _short_name(model)
+            if result:
+                state.current_positions[model.name] = result["content"]
+                _update_cost(state.cost, result)
+                state.model_status[short] = f"✅ R{round_num}:{result['latency_s']}s"
+
+        state.all_rounds.append(dict(state.current_positions))
+
+        # Convergence check
+        agreement = compute_agreement(list(state.current_positions.values()))
+        score = agreement["score"]
+        state.on_progress(ev.peer_agreement(score))
+
+        if score > 0.7:
+            state.converged_at = round_num
+            state.on_progress(ev.peer_converged(round_num, score))
+            break
+        else:
+            state.on_progress(ev.peer_no_consensus(score))
+
+    return state
+
+
+async def peer_judge(state: PeerDebateState) -> PeerDebateState:
+    """Stage 5: Judge synthesizes all positions into a final verdict."""
+    state.on_progress(ev.peer_judge())
+
+    aggregator = get_aggregator(prefer_premium=True)
+    if not aggregator:
+        state.judge_response = list(state.current_positions.values())[0]
+        return state
+
+    final_text = format_proposals(
+        list(state.current_positions.values()),
+        [k.split("/")[-1] for k in state.current_positions.keys()]
+    )
+    judge_result = await call_model(
+        aggregator,
+        [
+            {"role": "system", "content": DEBATE_JUDGE_SYSTEM.format(final_positions=final_text) + STRATEGIC_ADDENDUM},
+            {"role": "user", "content": state.query},
+        ],
+        temperature=0.1,
+        timeout=AGGREGATOR_TIMEOUT_SECONDS,
+    )
+
+    if judge_result:
+        _update_cost(state.cost, judge_result, is_aggregator=True)
+        state.judge_response = judge_result["content"]
+    else:
+        state.judge_response = list(state.current_positions.values())[0]
+
+    return state
+
+
+def peer_format_result(state: PeerDebateState) -> Dict[str, Any]:
+    """Assemble final result dict for peer debate."""
+    elapsed = int((time.monotonic() - state.start_time) * 1000)
+    return {
+        "response": state.judge_response,
+        "rounds": state.all_rounds,
+        "model_status": state.model_status,
+        "cost": state.cost,
+        "latency_ms": elapsed,
+        "converged_at": state.converged_at,
+        "debate_style": "peer",
+    }
+
+
+# Default peer pipeline
+PEER_PIPELINE = [peer_select_models, peer_independent, peer_challenge, peer_revision_rounds, peer_judge]
+
+
+async def run_peer_pipeline(
+    query: str,
+    rounds_count: int = 2,
+    tier_name: str = "pro",
+    on_progress: Optional[Callable] = None,
+    pipeline: Optional[List[Callable]] = None,
+) -> Dict[str, Any]:
+    """Run peer debate as a composable pipeline."""
+    _check_budget_or_raise()
+
+    state = PeerDebateState(
+        query=query,
+        rounds=rounds_count,
+        tier_name=tier_name,
+        on_progress=on_progress or (lambda msg: None),
+        cost=QueryCost(tier=f"peer-{tier_name}"),
+        start_time=time.monotonic(),
+    )
+
+    stages = pipeline or PEER_PIPELINE
+    for stage_fn in stages:
+        state = await stage_fn(state)
+
+    return peer_format_result(state)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ADVERSARIAL PIPELINE STAGES — each takes state, returns state
+# ══════════════════════════════════════════════════════════════════════════════
 
 async def resolve_template(state: DebateState) -> DebateState:
     """Stage 1: Resolve debate template from name or auto-detect."""
@@ -490,184 +753,13 @@ async def run_debate(
             on_progress=_progress, template_name=template_name,
         )
 
-    # ── Peer debate (unchanged) ──────────────��────────────────────────────
-    tier = TIERS.get(tier_name)
-    if not tier:
-        raise ValueError(f"Unknown tier: {tier_name}")
-
-    available = tier.available_proposers
-    if len(available) < 2:
-        raise RuntimeError("Debate requires at least 2 available models.")
-
-    cost = QueryCost(tier=f"debate-{tier_name}")
-    start = time.monotonic()
-    all_rounds = []
-    model_status = {}
-    converged_at = None
-
-    # ── Round 0: Independent ─────────���─────────────────────────────────────
-    names = [m.name.split("/")[-1] if "/" in m.name else m.name for m in available]
-    _progress(f"📝 {len(available)} models forming independent opinions... ({', '.join(names)})")
-    tasks = [call_model(m, [{"role": "user", "content": query}]) for m in available]
-    results = await asyncio.gather(*tasks)
-
-    current_positions = {}
-    for model, result in zip(available, results):
-        short = model.name.split("/")[-1] if "/" in model.name else model.name
-        if result:
-            current_positions[model.name] = result["content"]
-            _update_cost(cost, result)
-            model_status[short] = f"✅ R0:{result['latency_s']}s"
-        else:
-            model_status[short] = "❌ failed R0"
-
-    all_rounds.append(dict(current_positions))
-
-    if len(current_positions) < 2:
-        raise RuntimeError("Less than 2 models responded. Cannot debate.")
-
-    # ─�� Challenge round: find flaws before revision ───────────���────────────
-    _progress("🔍 Challenge round: \"Find something wrong. No, really. We insist.\"")
-    challenges_by_model = {}
-    challenge_tasks = []
-    challenge_models = []
-
-    for model in available:
-        if model.name not in current_positions:
-            continue
-        others = {k: v for k, v in current_positions.items() if k != model.name}
-        if not others:
-            continue
-
-        other_text = format_proposals(
-            list(others.values()),
-            [k.split("/")[-1] for k in others.keys()]
-        )
-        challenge_tasks.append(
-            call_model(model, [
-                {"role": "system", "content": DEBATE_CHALLENGE_SYSTEM.format(other_responses=other_text)},
-                {"role": "user", "content": query},
-            ])
-        )
-        challenge_models.append(model)
-
-    challenge_results = await asyncio.gather(*challenge_tasks)
-    for model, result in zip(challenge_models, challenge_results):
-        short = model.name.split("/")[-1] if "/" in model.name else model.name
-        if result:
-            challenges_by_model[model.name] = result["content"]
-            _update_cost(cost, result)
-            model_status[short] = f"✅ CH:{result['latency_s']}s"
-
-    # ── Debate rounds with convergence check ─────────────────��─────────────
-    round_messages = [
-        "⚔️  Round {n}: Models read the challenges. Egos bruised. Revising...",
-        "🔄 Round {n}: \"Actually, you make a fair point...\" (or not)",
-        "🤔 Round {n}: Models reconsider. Some dig in. Some fold.",
-    ]
-    for round_num in range(1, rounds + 1):
-        msg = round_messages[(round_num - 1) % len(round_messages)].format(n=round_num)
-        _progress(msg)
-        revision_tasks = []
-        revision_models = []
-
-        for model in available:
-            if model.name not in current_positions:
-                continue
-            others = {k: v for k, v in current_positions.items() if k != model.name}
-            if not others:
-                continue
-
-            other_text = format_proposals(
-                list(others.values()),
-                [k.split("/")[-1] for k in others.keys()]
-            )
-
-            # First revision round: include challenges
-            if round_num == 1 and challenges_by_model:
-                relevant_challenges = {
-                    k: v for k, v in challenges_by_model.items() if k != model.name
-                }
-                if relevant_challenges:
-                    challenge_text = format_proposals(
-                        list(relevant_challenges.values()),
-                        [k.split("/")[-1] for k in relevant_challenges.keys()]
-                    )
-                    system = DEBATE_REVISION_WITH_CHALLENGES_SYSTEM.format(
-                        challenges=challenge_text,
-                        other_responses=other_text,
-                    )
-                else:
-                    system = DEBATE_ROUND_SYSTEM.format(other_responses=other_text)
-            else:
-                system = DEBATE_ROUND_SYSTEM.format(other_responses=other_text)
-
-            revision_tasks.append(
-                call_model(model, [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": query},
-                ])
-            )
-            revision_models.append(model)
-
-        results = await asyncio.gather(*revision_tasks)
-        for model, result in zip(revision_models, results):
-            short = model.name.split("/")[-1] if "/" in model.name else model.name
-            if result:
-                current_positions[model.name] = result["content"]
-                _update_cost(cost, result)
-                model_status[short] = f"✅ R{round_num}:{result['latency_s']}s"
-
-        all_rounds.append(dict(current_positions))
-
-        # Convergence check: early exit if models agree
-        agreement = compute_agreement(list(current_positions.values()))
-        if agreement["score"] > 0.7:
-            converged_at = round_num
-            _progress(f"🤝 Consensus reached at round {round_num}! Agreement: {agreement['score']:.0%}. They actually agree now.")
-            break
-        else:
-            _progress(f"   📊 Agreement: {agreement['score']:.0%} — still fighting.")
-
-    # ── Final judgment ───��─────────────────────────────���───────────────────
-    _progress("⚖️  Judge enters the room. Reviewing all arguments...")
-    aggregator = get_aggregator(prefer_premium=True)
-    elapsed = int((time.monotonic() - start) * 1000)
-
-    if not aggregator:
-        return {
-            "response": list(current_positions.values())[0],
-            "rounds": all_rounds, "model_status": model_status,
-            "cost": cost, "latency_ms": elapsed,
-            "converged_at": converged_at,
-        }
-
-    final_text = format_proposals(
-        list(current_positions.values()),
-        [k.split("/")[-1] for k in current_positions.keys()]
-    )
-    judge_result = await call_model(
-        aggregator,
-        [
-            {"role": "system", "content": DEBATE_JUDGE_SYSTEM.format(final_positions=final_text) + STRATEGIC_ADDENDUM},
-            {"role": "user", "content": query},
-        ],
-        temperature=0.1,
-        timeout=AGGREGATOR_TIMEOUT_SECONDS,
+    return await run_peer_pipeline(
+        query, rounds_count=rounds, tier_name=tier_name,
+        on_progress=_progress,
     )
 
-    elapsed = int((time.monotonic() - start) * 1000)
-    if judge_result:
-        _update_cost(cost, judge_result, is_aggregator=True)
 
-    return {
-        "response": judge_result["content"] if judge_result else list(current_positions.values())[0],
-        "rounds": all_rounds,
-        "model_status": model_status,
-        "cost": cost,
-        "latency_ms": elapsed,
-        "converged_at": converged_at,
-    }
+
 
 
 # ═���════════════════════════════════════════════════════════════════════════════

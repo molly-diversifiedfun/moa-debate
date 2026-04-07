@@ -33,6 +33,12 @@ class EventType(Enum):
     JUDGE_ENTER = auto()
     JUDGE_COMPLETE = auto()
 
+    # Peer debate phases
+    PEER_INDEPENDENT = auto()
+    PEER_CHALLENGE = auto()
+    PEER_REVISION = auto()
+    PEER_JUDGE = auto()
+
     # Display
     BATTLE_CARD = auto()
     ARGUMENT_PREVIEW = auto()
@@ -233,5 +239,70 @@ def judge_enter(total_rounds: int) -> DebateEvent:
         type=EventType.JUDGE_ENTER,
         message=f"{'─' * 40}\n⚖️  JUDGE ENTERS ({total_rounds} rounds of testimony)\n{'─' * 40}",
         data={"total_rounds": total_rounds},
+        style="bold yellow",
+    )
+
+
+# ── Peer debate events ──────────────────────────────────────────────────────
+
+def peer_independent(model_count: int, model_names: list) -> DebateEvent:
+    return DebateEvent(
+        type=EventType.PEER_INDEPENDENT,
+        message=f"📝 {model_count} models forming independent opinions... ({', '.join(model_names)})",
+        data={"model_count": model_count, "model_names": model_names},
+        style="bold cyan",
+    )
+
+
+def peer_challenge() -> DebateEvent:
+    return DebateEvent(
+        type=EventType.PEER_CHALLENGE,
+        message='🔍 Challenge round: "Find something wrong. No, really. We insist."',
+        style="bold yellow",
+    )
+
+
+def peer_revision(round_num: int, message: str) -> DebateEvent:
+    return DebateEvent(
+        type=EventType.PEER_REVISION,
+        message=f"\n{message}",
+        data={"round": round_num},
+        style="bold cyan",
+    )
+
+
+def peer_agreement(score: float) -> DebateEvent:
+    filled = int(score * 20)
+    bar = "█" * filled + "░" * (20 - filled)
+    return DebateEvent(
+        type=EventType.AGREEMENT_BAR,
+        message=f"   [{bar}] {score:.0%} agreement",
+        data={"score": score},
+        style="yellow",
+    )
+
+
+def peer_converged(round_num: int, score: float) -> DebateEvent:
+    return DebateEvent(
+        type=EventType.DEBATE_CONVERGED,
+        message=f"🤝 Consensus reached at round {round_num}! Agreement: {score:.0%}. They actually agree now.",
+        data={"round": round_num, "score": score},
+        style="bold green",
+    )
+
+
+def peer_no_consensus(score: float) -> DebateEvent:
+    return DebateEvent(
+        type=EventType.DEBATE_HARDENED,
+        message=f"   📊 Agreement: {score:.0%} — still fighting.",
+        data={"score": score},
+        style="yellow",
+    )
+
+
+def peer_judge() -> DebateEvent:
+    return DebateEvent(
+        type=EventType.PEER_JUDGE,
+        message="⚖️  Judge enters the room. Reviewing all arguments...",
         style="bold yellow",
     )
