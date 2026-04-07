@@ -1,0 +1,18 @@
+#!/bin/sh
+# Pre-push hook: run the full mock test suite before pushing.
+# Catches regressions before they hit GitHub. Fast (~7s).
+# Bypass with --no-verify only when you're certain.
+
+set -e
+
+echo "→ Running pytest -q (197 mock tests, ~7s)..."
+GEMINI_API_KEY=test-key python3 -m pytest -q 2>&1 | tail -5
+
+if [ ${PIPESTATUS:-$?} -ne 0 ]; then
+  echo ""
+  echo "❌ Tests failed — push blocked."
+  echo "   Fix tests, or bypass with: git push --no-verify"
+  exit 1
+fi
+
+echo "✅ All tests pass."

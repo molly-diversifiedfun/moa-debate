@@ -1,0 +1,21 @@
+#!/bin/sh
+# Pre-commit hook: when cli.py is staged, verify it imports cleanly.
+# Catches missing imports, syntax errors, name shadowing — the failure mode
+# behind the Session 4 missing Optional bug and Session 5 UnboundLocalError.
+# Fast (~1s). Bypass with --no-verify if needed.
+
+set -e
+
+if git diff --cached --name-only | grep -q "src/moa/cli.py"; then
+  echo "→ cli.py staged — verifying it imports cleanly..."
+  if ! GEMINI_API_KEY=test-key python3 -c "from moa.cli import app" 2>/tmp/moa-cli-import-err; then
+    echo ""
+    echo "❌ src/moa/cli.py has import-time errors — commit blocked."
+    echo ""
+    cat /tmp/moa-cli-import-err
+    echo ""
+    echo "   Fix the imports, or bypass with: git commit --no-verify"
+    exit 1
+  fi
+  echo "✅ cli.py imports cleanly."
+fi
