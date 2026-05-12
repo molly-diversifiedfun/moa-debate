@@ -767,15 +767,24 @@ async def run_research_brief(
     sub_questions = await decompose_query(query)
     _emit(f"Plan: {len(sub_questions)} sub-question(s).")
 
-    # 2. Parallel per-sub-question research + worker synthesis
-    async def _research_one(sub_q: str) -> Dict[str, Any]:
-        if depth == "shallow":
-            ctx = await lite_search(sub_q, provider)
-        else:
-            ctx = await deep_research(sub_q, provider)
-        if not ctx:
-            return {"sub_question": sub_q, "answer": "(no research material found)", "context": ""}
+    # 2a. Parallel research per sub-question (search only — no worker synth yet).
+    # Each sub-q drives its own targeted Firecrawl pass, but the resulting source
+    # material is POOLED across workers so a sub-question like "compare X and Y"
+    # can see the searches that ran for "X features" and "Y features".
+    _emit(f"Researching {len(sub_questions)} sub-question(s) in parallel…")
+    search_fn = lite_search if depth == "shallow" else deep_research
+    raw_contexts = await asyncio.gather(*[search_fn(q, provider) for q in sub_questions])
 
+    pooled_context = "\n\n---\n\n".join(c for c in raw_contexts if c)
+    if not pooled_context:
+        # Every search came up empty — synth would have nothing to work from
+        raise RuntimeError(
+            "Research returned no results for any sub-question. Try rephrasing."
+        )
+
+    # 2b. Parallel workers — each compresses findings for ITS sub-question
+    # using the FULL pooled source material (not just its own search results).
+    async def _worker(sub_q: str) -> Dict[str, Any]:
         worker_model = get_aggregator(prefer_premium=False)
         result = await call_model(
             worker_model,
@@ -784,7 +793,7 @@ async def run_research_brief(
                 {
                     "role": "user",
                     "content": (
-                        f"[RESEARCH MATERIAL]\n{ctx}\n[/RESEARCH MATERIAL]\n\n"
+                        f"[RESEARCH MATERIAL]\n{pooled_context}\n[/RESEARCH MATERIAL]\n\n"
                         f"Sub-question: {sub_q}"
                     ),
                 },
@@ -793,13 +802,11 @@ async def run_research_brief(
             timeout=AGGREGATOR_TIMEOUT_SECONDS,
         )
         if not result:
-            return {"sub_question": sub_q, "answer": "(worker model failed)", "context": ctx}
-
+            return {"sub_question": sub_q, "answer": "(worker model failed)"}
         _update_cost(cost, result, is_aggregator=False)
-        return {"sub_question": sub_q, "answer": result["content"], "context": ctx}
+        return {"sub_question": sub_q, "answer": result["content"]}
 
-    _emit(f"Researching {len(sub_questions)} sub-question(s) in parallel…")
-    worker_outputs = await asyncio.gather(*[_research_one(q) for q in sub_questions])
+    worker_outputs = await asyncio.gather(*[_worker(q) for q in sub_questions])
 
     # 3. Final synthesis
     _emit("Synthesizing brief…")

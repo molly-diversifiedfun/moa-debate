@@ -233,9 +233,9 @@ async def test_run_research_brief_shallow_uses_lite_search(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_research_brief_handles_empty_context(monkeypatch):
-    """When deep_research returns None (no results), worker gets a sentinel answer
-    and the brief still assembles (graceful degradation)."""
+async def test_run_research_brief_raises_when_all_searches_empty(monkeypatch):
+    """When EVERY sub-question's research returns nothing, fail fast rather than
+    produce an empty brief."""
     from moa.adaptive import run_research_brief
 
     monkeypatch.setattr("moa.research.get_search_provider", lambda: MagicMock())
@@ -244,14 +244,41 @@ async def test_run_research_brief_handles_empty_context(monkeypatch):
         AsyncMock(return_value=["sub-q empty"]),
     )
     monkeypatch.setattr("moa.research.deep_research", AsyncMock(return_value=None))
+    monkeypatch.setattr("moa.adaptive._check_budget_or_raise", lambda: None)
 
-    synth_calls: list[list] = []
+    with pytest.raises(RuntimeError, match="no results"):
+        await run_research_brief("q")
+
+
+@pytest.mark.asyncio
+async def test_run_research_brief_pools_context_across_workers(monkeypatch):
+    """Each worker should see the FULL pooled research, not just its own sub-q's
+    search results. Regression for the original bug: a 'compare X to Y' sub-question
+    couldn't compare because it only saw the 'compare' search results, not the
+    sibling 'X features' / 'Y features' results."""
+    from moa.adaptive import run_research_brief
+
+    monkeypatch.setattr("moa.research.get_search_provider", lambda: MagicMock())
+    monkeypatch.setattr(
+        "moa.research.decompose_query",
+        AsyncMock(return_value=["What is X?", "What is Y?", "How do X and Y compare?"]),
+    )
+    # Each sub-q gets its own distinctive context substring
+    async def fake_deep(q, p, **k):
+        if "What is X" in q:
+            return "FACTS_ABOUT_X here"
+        if "What is Y" in q:
+            return "FACTS_ABOUT_Y here"
+        return "COMPARISON_HINT here"
+    monkeypatch.setattr("moa.research.deep_research", fake_deep)
+
+    seen_user_messages: list[str] = []
 
     async def fake_call_model(model, messages, **kw):
-        if "research brief" in messages[0]["content"].lower():
-            synth_calls.append(messages)
-            return _fake_call_result("# Brief\nNo data found.")
-        return _fake_call_result("ok")
+        user = messages[1]["content"]
+        if "ONE sub-question" in messages[0]["content"]:
+            seen_user_messages.append(user)
+        return _fake_call_result("worker answer with [1]")
 
     monkeypatch.setattr("moa.adaptive.call_model", fake_call_model)
     monkeypatch.setattr("moa.adaptive._check_budget_or_raise", lambda: None)
@@ -261,7 +288,11 @@ async def test_run_research_brief_handles_empty_context(monkeypatch):
         lambda prefer_premium=False: MagicMock(name="m"),
     )
 
-    result = await run_research_brief("q")
-    assert "no research material found" in result["worker_outputs"][0]["answer"]
-    # Synth still ran exactly once
-    assert len(synth_calls) == 1
+    await run_research_brief("Compare X and Y")
+
+    # All 3 workers should have seen ALL 3 fragments in their research material
+    assert len(seen_user_messages) == 3
+    for msg in seen_user_messages:
+        assert "FACTS_ABOUT_X" in msg, "worker missed pooled X facts"
+        assert "FACTS_ABOUT_Y" in msg, "worker missed pooled Y facts"
+        assert "COMPARISON_HINT" in msg, "worker missed pooled compare hint"

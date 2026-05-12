@@ -144,7 +144,8 @@ tests/
 ├── test_events.py             # 27 tests — typed event system
 ├── test_export.py             # 23 tests — HTML + markdown transcript export
 ├── test_outcomes.py           # 17 tests — outcome tracking feedback loop
-└── test_compare.py            # 6 tests — moa compare command
+├── test_compare.py            # 6 tests — moa compare command
+└── test_research_brief.py     # 11 tests — moa research command (decomposition + orchestration + cross-worker pooling regression)
 ```
 
-Total: 197 mock tests + 14 live tests (T2+T3+T3.5) = 211 tests available.
+Total: 208 mock tests + 14 live tests (T2+T3+T3.5) = 222 tests available.

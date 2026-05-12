@@ -56,6 +56,7 @@ The "2-5" / "3-5" range is core proposers + however many optional providers have
 - `moa debate --style adversarial` → 2 debaters + 1 judge per round, picks strongest models across all tiers
 - `moa debate --style peer` → 2-5 proposers + 1 judge per round
 - `moa review --staged` → 4 specialist reviewers (security, architecture, performance, correctness)
+- `moa research` → 1 classifier (decompose) + N parallel searches + N parallel workers (one per sub-q) + 1 Opus synthesizer
 - `moa compare` → 1 single model + lite ensemble in parallel
 
 ---
@@ -156,6 +157,53 @@ When models disagree, the system:
 This prevents the biggest failure mode of multi-model consensus: **correlated hallucination**. When all models share the same training gap (e.g., niche tooling), they confidently guess different wrong answers. Research grounds them in reality.
 
 Force deep research: `moa ask --research deep "query"` runs 2-3 rounds of web search, identifies gaps, and synthesizes with a single frontier model.
+
+Multi-agent research brief: `moa research "query"` decomposes the query into 3-5 sub-questions, runs `deep_research` per sub-question in parallel, **pools the source material across all sub-questions** (so a "compare X and Y" sub-question can see sibling searches for X and Y), then has one Sonnet worker per sub-question compress findings with `[N]` citations, and one Opus synthesizer assemble a final `Title / TL;DR / Findings / Open questions / Sources` brief. Different from `--research deep` in that it spawns multiple compressing workers and supports per-sub-question parallelism for comparison-shaped queries.
+
+```
+moa research "<query>"
+        │
+        ▼
+┌──────────────────────────────────────────────────┐
+│ 1. PLAN — classifier model (Haiku/cheap)         │
+│    Decompose query → 3-5 sub-questions (JSON)    │
+└──────────────────────────────────────────────────┘
+        │
+        ▼
+┌──────────────────────────────────────────────────┐
+│ 2a. SEARCH — parallel deep_research per sub-q    │
+│     (lite_search at --depth shallow)             │
+│     Returns per-sub-q context blobs              │
+└──────────────────────────────────────────────────┘
+        │
+        ▼
+┌──────────────────────────────────────────────────┐
+│ 2b. POOL — concatenate all sub-q contexts        │
+│     Single shared source material across workers │
+└──────────────────────────────────────────────────┘
+        │
+        ▼
+┌──────────────────────────────────────────────────┐
+│ 3. WORKERS — parallel Sonnet per sub-question    │
+│    Each worker sees POOLED context, focuses on   │
+│    ITS sub-question, emits cited mini-answer     │
+│    with [N] markers tied to the pooled sources   │
+└──────────────────────────────────────────────────┘
+        │
+        ▼
+┌──────────────────────────────────────────────────┐
+│ 4. SYNTH — single Opus pass                      │
+│    Receives original query + sub-questions +     │
+│    all worker outputs.                           │
+│    Emits: # Title / ## TL;DR / ## Findings /     │
+│    ## Open questions / ## Sources                │
+│    Re-numbers [N] across the full brief so       │
+│    indices align with the deduplicated Sources.  │
+└──────────────────────────────────────────────────┘
+        │
+        ▼
+   Brief (markdown) → console + optional --export file
+```
 
 ---
 
