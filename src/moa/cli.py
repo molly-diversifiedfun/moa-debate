@@ -904,9 +904,10 @@ def research(
     else:
         console.print(Panel(Markdown(body), title="Research Brief", border_style="cyan"))
         cost = result["cost"]
+        total_tokens = cost.total_input_tokens + cost.total_output_tokens
         console.print(
             f"  [bold]${cost.estimated_cost_usd:.4f}[/bold]  ·  "
-            f"{cost.total_tokens:,} tokens  ·  ⏱  {result['latency_ms']}ms  ·  "
+            f"{total_tokens:,} tokens  ·  ⏱  {result['latency_ms']}ms  ·  "
             f"📋 {len(result['sub_questions'])} sub-question(s)  ·  "
             f"🤖 synth: {result['synthesizer']}"
         )
@@ -922,7 +923,7 @@ def research(
             f"**Depth:** {depth}",
             f"**Synthesizer:** {result['synthesizer']}",
             f"**Cost:** ${result['cost'].estimated_cost_usd:.4f}",
-            f"**Tokens:** {result['cost'].total_tokens:,}",
+            f"**Tokens:** {result['cost'].total_input_tokens + result['cost'].total_output_tokens:,}",
             "",
             "---",
             "",
