@@ -250,6 +250,224 @@ async def test_run_research_brief_raises_when_all_searches_empty(monkeypatch):
         await run_research_brief("q")
 
 
+# ── identify_research_gaps ────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_identify_research_gaps_skips_llm_when_no_signals(monkeypatch):
+    """Pre-check should return [] WITHOUT making an LLM call when no gap
+    keywords appear in worker outputs."""
+    from moa.research import identify_research_gaps
+
+    monkeypatch.setattr("moa.models.CLASSIFIER_MODEL", _make_model())
+    spy = AsyncMock(return_value=_fake_call_result("should not be called"))
+    monkeypatch.setattr("moa.engine.call_model", spy)
+
+    result = await identify_research_gaps(
+        "Compare X and Y",
+        ["What is X?", "What is Y?"],
+        ["X is a tool that [1] does Y.", "Y is similar to Z [2]."],
+    )
+    assert result == []
+    spy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_identify_research_gaps_finds_targeted_queries(monkeypatch):
+    """When a worker says 'research material doesn't provide ___', the LLM
+    should be invoked and return targeted gap-fill queries."""
+    from moa.research import identify_research_gaps
+
+    monkeypatch.setattr("moa.models.CLASSIFIER_MODEL", _make_model())
+    monkeypatch.setattr(
+        "moa.engine.call_model",
+        AsyncMock(return_value=_fake_call_result(
+            '{"gap_queries": ["Beehiiv official pricing 2025", "site:beehiiv.com features"]}'
+        )),
+    )
+
+    result = await identify_research_gaps(
+        "Substack vs Beehiiv pricing",
+        ["What is Substack pricing?", "What is Beehiiv pricing?"],
+        [
+            "Substack charges 10% [1].",
+            "The research material doesn't provide specific Beehiiv pricing.",
+        ],
+    )
+    assert result == ["Beehiiv official pricing 2025", "site:beehiiv.com features"]
+
+
+@pytest.mark.asyncio
+async def test_identify_research_gaps_caps_at_five(monkeypatch):
+    """Even if the LLM returns more than 5 queries, only the top 5 are used."""
+    from moa.research import identify_research_gaps
+
+    monkeypatch.setattr("moa.models.CLASSIFIER_MODEL", _make_model())
+    monkeypatch.setattr(
+        "moa.engine.call_model",
+        AsyncMock(return_value=_fake_call_result(
+            json.dumps({"gap_queries": [f"q{i}" for i in range(8)]})
+        )),
+    )
+    result = await identify_research_gaps(
+        "q",
+        ["sub-q"],
+        ["research material doesn't provide answer"],
+    )
+    assert len(result) == 5
+
+
+@pytest.mark.asyncio
+async def test_identify_research_gaps_returns_empty_on_bad_json(monkeypatch):
+    """Garbage JSON from the classifier → empty list (don't crash the pipeline)."""
+    from moa.research import identify_research_gaps
+
+    monkeypatch.setattr("moa.models.CLASSIFIER_MODEL", _make_model())
+    monkeypatch.setattr(
+        "moa.engine.call_model",
+        AsyncMock(return_value=_fake_call_result("not json")),
+    )
+    result = await identify_research_gaps(
+        "q",
+        ["sub-q"],
+        ["research material doesn't provide answer"],
+    )
+    assert result == []
+
+
+# ── run_research_brief gap-fill integration ──────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_research_brief_gap_fill_refires_workers_when_deep(monkeypatch):
+    """In deep mode, if workers flag gaps, identify_research_gaps returns queries,
+    additional searches run, and workers re-fire with augmented context."""
+    from moa.adaptive import run_research_brief
+
+    monkeypatch.setattr("moa.research.get_search_provider", lambda: MagicMock())
+    monkeypatch.setattr(
+        "moa.research.decompose_query",
+        AsyncMock(return_value=["sub-q 1", "sub-q 2"]),
+    )
+    monkeypatch.setattr(
+        "moa.research.deep_research",
+        AsyncMock(side_effect=lambda q, p, **k: f"initial ctx for {q}"),
+    )
+    monkeypatch.setattr(
+        "moa.research.identify_research_gaps",
+        AsyncMock(return_value=["gap query 1", "gap query 2"]),
+    )
+
+    # provider.search returns 1 SearchResult per gap query
+    from moa.research import SearchResult
+    async def fake_search(q, max_results=3):
+        return [SearchResult(url=f"https://gap.com/{q}", title=f"gap source for {q}",
+                             snippet="", content=f"GAP_CONTENT_{q}")]
+    # Patch the provider returned by get_search_provider
+    mock_provider = MagicMock()
+    mock_provider.search = fake_search
+    monkeypatch.setattr("moa.research.get_search_provider", lambda: mock_provider)
+
+    worker_calls: list = []
+    async def fake_call_model(model, messages, **kw):
+        if "ONE sub-question" in messages[0]["content"]:
+            worker_calls.append(messages[1]["content"])
+            return _fake_call_result("worker answer with [1]")
+        return _fake_call_result("# Brief\n\n## TL;DR\nx.")
+
+    monkeypatch.setattr("moa.adaptive.call_model", fake_call_model)
+    monkeypatch.setattr("moa.adaptive._check_budget_or_raise", lambda: None)
+    monkeypatch.setattr("moa.adaptive.record_spend", lambda x: None)
+    monkeypatch.setattr(
+        "moa.adaptive.get_aggregator",
+        lambda prefer_premium=False: MagicMock(name="m"),
+    )
+
+    result = await run_research_brief("Compare X and Y", depth="deep")
+
+    # 2 initial worker calls + 2 refill worker calls = 4 worker calls total
+    assert len(worker_calls) == 4
+    # The first 2 calls only saw initial context, NOT the gap content
+    assert "initial ctx for sub-q 1" in worker_calls[0]
+    assert "GAP_CONTENT" not in worker_calls[0]
+    # The refill calls saw BOTH initial context AND gap content
+    assert "GAP_CONTENT_gap query 1" in worker_calls[2]
+    assert "GAP_CONTENT_gap query 2" in worker_calls[2]
+    # Result exposes the gap queries
+    assert result["gap_queries"] == ["gap query 1", "gap query 2"]
+
+
+@pytest.mark.asyncio
+async def test_run_research_brief_no_gap_fill_when_shallow(monkeypatch):
+    """Shallow mode skips gap-fill entirely (cost optimization)."""
+    from moa.adaptive import run_research_brief
+
+    monkeypatch.setattr("moa.research.get_search_provider", lambda: MagicMock())
+    monkeypatch.setattr(
+        "moa.research.decompose_query",
+        AsyncMock(return_value=["sub-q 1"]),
+    )
+    monkeypatch.setattr(
+        "moa.research.lite_search",
+        AsyncMock(return_value="lite ctx"),
+    )
+    # If identify_research_gaps were called, this would assert
+    spy = AsyncMock(return_value=["should not fire"])
+    monkeypatch.setattr("moa.research.identify_research_gaps", spy)
+
+    async def fake_call_model(model, messages, **kw):
+        return _fake_call_result("x")
+
+    monkeypatch.setattr("moa.adaptive.call_model", fake_call_model)
+    monkeypatch.setattr("moa.adaptive._check_budget_or_raise", lambda: None)
+    monkeypatch.setattr("moa.adaptive.record_spend", lambda x: None)
+    monkeypatch.setattr(
+        "moa.adaptive.get_aggregator",
+        lambda prefer_premium=False: MagicMock(name="m"),
+    )
+
+    result = await run_research_brief("q", depth="shallow")
+    spy.assert_not_called()
+    assert result["gap_queries"] == []
+
+
+@pytest.mark.asyncio
+async def test_run_research_brief_no_gap_fill_when_no_gaps(monkeypatch):
+    """Deep mode with no detected gaps → identify returns [] → workers don't re-fire."""
+    from moa.adaptive import run_research_brief
+
+    monkeypatch.setattr("moa.research.get_search_provider", lambda: MagicMock())
+    monkeypatch.setattr(
+        "moa.research.decompose_query",
+        AsyncMock(return_value=["sub-q 1"]),
+    )
+    monkeypatch.setattr(
+        "moa.research.deep_research",
+        AsyncMock(return_value="ctx"),
+    )
+    monkeypatch.setattr(
+        "moa.research.identify_research_gaps",
+        AsyncMock(return_value=[]),  # no gaps
+    )
+
+    worker_calls = 0
+    async def fake_call_model(model, messages, **kw):
+        nonlocal worker_calls
+        if "ONE sub-question" in messages[0]["content"]:
+            worker_calls += 1
+        return _fake_call_result("answer")
+
+    monkeypatch.setattr("moa.adaptive.call_model", fake_call_model)
+    monkeypatch.setattr("moa.adaptive._check_budget_or_raise", lambda: None)
+    monkeypatch.setattr("moa.adaptive.record_spend", lambda x: None)
+    monkeypatch.setattr(
+        "moa.adaptive.get_aggregator",
+        lambda prefer_premium=False: MagicMock(name="m"),
+    )
+
+    result = await run_research_brief("q", depth="deep")
+    assert worker_calls == 1  # initial only — no refill
+    assert result["gap_queries"] == []
+
+
 @pytest.mark.asyncio
 async def test_run_research_brief_pools_context_across_workers(monkeypatch):
     """Each worker should see the FULL pooled research, not just its own sub-q's

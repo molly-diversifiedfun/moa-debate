@@ -370,6 +370,79 @@ async def decompose_query(query: str) -> List[str]:
         return [query]
 
 
+# ── Gap analysis for research brief ──────────────────────────────────────────
+
+async def identify_research_gaps(
+    original_query: str,
+    sub_questions: List[str],
+    worker_outputs: List[str],
+) -> List[str]:
+    """Inspect worker outputs for "(no data)" / "research material doesn't"
+    patterns, then ask a cheap classifier to generate targeted search queries
+    that would fill those gaps. Returns up to 5 search queries; [] on failure
+    or if no gaps found."""
+    from .models import CLASSIFIER_MODEL, CLAUDE_HAIKU
+    from .engine import call_model
+    from .prompts import RESEARCH_GAP_ANALYSIS_PROMPT
+
+    model = CLASSIFIER_MODEL if CLASSIFIER_MODEL.available else CLAUDE_HAIKU
+    if not model or not model.available:
+        return []
+
+    # Quick keyword pre-check — skip the LLM call if no obvious gap signals
+    pool = "\n\n".join(worker_outputs).lower()
+    gap_signals = (
+        "research material doesn't",
+        "not available in the research material",
+        "no research material found",
+        "research material lacks",
+        "sources don't detail",
+        "sources don't provide",
+        "not detailed in the research",
+        "not documented",
+        "no data available",
+    )
+    if not any(s in pool for s in gap_signals):
+        return []
+
+    worker_block = "\n\n".join(
+        f"### Sub-question {i+1}: {sq}\n\n{wo}"
+        for i, (sq, wo) in enumerate(zip(sub_questions, worker_outputs))
+    )
+
+    result = await call_model(
+        model,
+        [
+            {"role": "system", "content": RESEARCH_GAP_ANALYSIS_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Original question: {original_query}\n\n"
+                    f"Worker outputs:\n{worker_block}"
+                ),
+            },
+        ],
+        temperature=0.0,
+        max_tokens=400,
+        timeout=15,
+    )
+
+    if not result:
+        return []
+
+    try:
+        text = result["content"].strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        parsed = json.loads(text)
+        queries = parsed.get("gap_queries", [])
+        if not isinstance(queries, list):
+            return []
+        return [str(q) for q in queries[:5] if isinstance(q, str) and q.strip()]
+    except (json.JSONDecodeError, KeyError, AttributeError):
+        return []
+
+
 # ── Source dedup for research brief ──────────────────────────────────────────
 
 def collect_unique_sources(results: List[SearchResult]) -> List[SearchResult]:

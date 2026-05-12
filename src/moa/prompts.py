@@ -364,6 +364,28 @@ Rules:
 - Include exact tool/library/framework names from the question
 - Keep each query under 10 words
 
+**Named-entity rule (CRITICAL — avoids ranking by SEO content farms):**
+
+If the question names a specific product, company, vendor, framework, or \
+service (a proper noun — capitalized brand/tool name), AT LEAST ONE of your \
+queries MUST use a `site:` modifier or include the entity's plausible domain \
+directly. Default heuristic: lowercase the entity name + `.com` is usually \
+correct (Beehiiv → beehiiv.com, Stripe → stripe.com, Notion → notion.so or \
+notion.com — pick the one most likely to host product docs).
+
+Examples:
+- Q: "What are Beehiiv's 2025 pricing tiers?"
+  ✅ ["site:beehiiv.com pricing", "Beehiiv pricing 2025 official documentation"]
+  ❌ ["Beehiiv pricing comparison", "newsletter platform pricing 2025"]
+- Q: "How does Stripe's recurring billing fee work?"
+  ✅ ["site:stripe.com recurring billing fees", "Stripe Billing 2025 pricing"]
+- Q: "What is event sourcing?" (no named entity → no site: needed)
+  ✅ ["event sourcing pattern definition", "event sourcing vs CQRS"]
+
+The point: search engines over-rank critique blogs and aggregator content farms \
+for `<entity> pricing` type queries. `site:` modifiers force the vendor's own \
+authoritative pages.
+
 Respond with ONLY a JSON object, no other text:
 {"queries": ["search query 1", "search query 2"]}"""
 
@@ -462,6 +484,33 @@ Rules:
 - Cover distinct aspects — don't repeat the same angle in different words.
 - Order from broadest to most specific.
 - Skip sub-questions that are pure opinion or unanswerable from public sources.
+- **Phrase each sub-question so it would surface authoritative primary sources** \
+(official documentation, vendor pricing pages, peer-reviewed work, regulatory \
+filings, primary reporting) — not opinion blogs or aggregators.
+
+**Multi-entity / comparison rule (CRITICAL):**
+
+If the original question compares, contrasts, or asks about switching between \
+two or more named entities (products, companies, technologies, frameworks, \
+people, places — e.g., "X vs Y", "switch from X to Y", "compare X and Y", \
+"X or Y for ___"), your decomposition MUST include AT LEAST ONE dedicated \
+sub-question per named entity, framed to surface that entity's own \
+authoritative documentation.
+
+Example — original: "Should I switch from Substack to Beehiiv for my newsletter?"
+- ✅ "What are Substack's 2025 pricing tiers and revenue share terms per their \
+official documentation?"
+- ✅ "What are Beehiiv's 2025 pricing tiers, paid-tier features, and ad/sponsor \
+revenue terms per their official documentation?"
+- ✅ "What does each platform document about subscriber-list portability and \
+custom-domain ownership during migration?"
+- ❌ "What's the difference between Substack and Beehiiv?" (too vague — search \
+results will be opinion blogs)
+- ❌ "Which is better, Substack or Beehiiv?" (opinion question, not researchable)
+
+The point: comparison queries fail when search returns only critique-of-X \
+articles. Per-entity sub-questions force the search engine to surface each \
+entity's own sources.
 
 Return ONLY a JSON object, no prose:
 {"sub_questions": ["...", "...", "..."]}"""
@@ -482,6 +531,34 @@ Output format (markdown):
 ## <restate sub-question as a short heading>
 
 <answer body with [N] citations inline>"""
+
+
+RESEARCH_GAP_ANALYSIS_PROMPT = """You are a research gap analyzer. You receive \
+the original question, the sub-questions used, and each worker's output.
+
+Identify sub-questions where the worker said the research material was \
+insufficient — common signals: "research material doesn't provide", "not \
+available in the research material", "(no research material found)", "sources \
+don't detail", "research material lacks", "no [X] data available".
+
+For each gap, generate ONE highly targeted web search query that would surface \
+the missing information. Favor:
+- Official documentation queries (entity name + "documentation" / "pricing page" \
+/ "features")
+- Year-bounded queries when the gap is about current state (append "2025" or \
+"2026")
+- Domain-targeted queries when an obvious authoritative source exists (e.g., \
+"beehiiv.com pricing" rather than "beehiiv pricing comparison")
+
+Return ONLY a JSON object, no prose:
+{"gap_queries": ["...", "...", "..."]}
+
+If NO meaningful gaps exist (all sub-questions adequately answered), return:
+{"gap_queries": []}
+
+Maximum 5 gap queries — focus on the most consequential gaps for answering the \
+original question. Skip gaps that are minor or unlikely to be answerable from \
+public sources."""
 
 
 RESEARCH_BRIEF_SYNTHESIS_PROMPT = """You assemble a research brief from \

@@ -740,7 +740,7 @@ async def run_research_brief(
     """
     from .research import (
         decompose_query, deep_research, lite_search, get_search_provider,
-        format_research_context, collect_unique_sources,
+        format_research_context, collect_unique_sources, identify_research_gaps,
     )
     from .prompts import (
         RESEARCH_WORKER_SYNTHESIS_PROMPT,
@@ -808,6 +808,55 @@ async def run_research_brief(
 
     worker_outputs = await asyncio.gather(*[_worker(q) for q in sub_questions])
 
+    # 2c. Gap-fill round (deep mode only) — if workers flagged "no data" gaps,
+    # run targeted searches to fill them, then re-run affected workers.
+    # Skipped at depth='shallow' for cost reasons.
+    gap_queries: list = []
+    if depth == "deep":
+        gap_queries = await identify_research_gaps(
+            query,
+            sub_questions,
+            [w["answer"] for w in worker_outputs],
+        )
+
+    if gap_queries:
+        _emit(f"Filling {len(gap_queries)} research gap(s)…")
+        # Search each gap query (one round, 3 results each)
+        gap_results = await asyncio.gather(*[
+            provider.search(gq, max_results=3) for gq in gap_queries
+        ])
+        gap_blob = format_research_context(
+            [r for rs in gap_results for r in (rs or [])],
+            max_chars=8000,
+        )
+
+        if gap_blob:
+            augmented_pool = pooled_context + "\n\n---\n\n" + gap_blob
+
+            async def _refill_worker(w: Dict[str, Any]) -> Dict[str, Any]:
+                worker_model = get_aggregator(prefer_premium=False)
+                result = await call_model(
+                    worker_model,
+                    [
+                        {"role": "system", "content": RESEARCH_WORKER_SYNTHESIS_PROMPT},
+                        {
+                            "role": "user",
+                            "content": (
+                                f"[RESEARCH MATERIAL]\n{augmented_pool}\n[/RESEARCH MATERIAL]\n\n"
+                                f"Sub-question: {w['sub_question']}"
+                            ),
+                        },
+                    ],
+                    temperature=0.1,
+                    timeout=AGGREGATOR_TIMEOUT_SECONDS,
+                )
+                if not result:
+                    return w  # keep original
+                _update_cost(cost, result, is_aggregator=False)
+                return {"sub_question": w["sub_question"], "answer": result["content"]}
+
+            worker_outputs = await asyncio.gather(*[_refill_worker(w) for w in worker_outputs])
+
     # 3. Final synthesis
     _emit("Synthesizing brief…")
     sub_q_block = "\n".join(f"{i+1}. {w['sub_question']}" for i, w in enumerate(worker_outputs))
@@ -847,6 +896,7 @@ async def run_research_brief(
             {"sub_question": w["sub_question"], "answer": w["answer"]}
             for w in worker_outputs
         ],
+        "gap_queries": gap_queries,
         "cost": cost,
         "latency_ms": elapsed,
         "depth": depth,
