@@ -78,6 +78,36 @@ The adversarial format forces one model to find every weakness in your plan whil
 
 ---
 
+## "I want a real research brief on a multi-angle question, with citations"
+
+Different shape from "should I X?" — you have a comparison or explainer question where you need source-grounded answers across multiple dimensions.
+
+```bash
+# Compare two platforms across pricing, lock-in, analytics, monetization
+moa research "Should I switch from Substack to Beehiiv? Compare pricing at 1k/5k/25k subscribers, lock-in, analytics, monetization options, and the audience-size threshold where switching pays off."
+
+# Explainer with sources
+moa research "How does Anthropic's prompt caching work and what are the actual cache-hit savings on tool-heavy workloads?"
+
+# Faster + cheaper for quick comparisons
+moa research --depth shallow "What's the difference between Tavily, Exa, and Perplexity Sonar for AI search APIs?"
+
+# Export to a markdown file for sharing or .docx conversion
+moa research --export brief.md "..."
+```
+
+**What `moa research` gives you:**
+- **Decomposition** — your question gets broken into 3-5 focused sub-questions before any search runs
+- **Pooled research** — every sub-question's sources are shared with every worker, so a "compare X to Y" sub-question can see the searches that ran for "X features" and "Y features"
+- **`[N]` citations** — every factual claim is tied to a numbered source, dedup'd into a final Sources block
+- **Honest gap-surfacing** — when the research material can't answer a sub-question, the brief says so in an "Open questions" section rather than fabricating
+
+**When to pick `moa research` over `moa debate`:** Research mode is for *what is this?* / *how do these compare?* Debate is for *should I do X?* Different output shapes — research returns a brief with TL;DR + Findings + Sources; debate returns Verdict + Decision Tree + How to De-Risk.
+
+**When to pick `moa research` over `moa ask --research deep`:** Use `moa research` when the question has distinct sub-angles that benefit from parallel searching and per-angle synthesis. Use `--research deep` when one focused question needs one long-form answer.
+
+---
+
 ## "I'm building a side project and I need to ship fast"
 
 You're a solopreneur or indie hacker. You don't have a team to bounce ideas off. You need practical advice from people who've done it.
@@ -252,7 +282,9 @@ MOA integrates as slash commands — no terminal switching needed.
 | Architecture decision | `moa ask "..."` | ~$0.15 | 20s | + conditionals, de-risking |
 | "Should I X or Y?" | `moa ask "..."` | ~$0.10 | 15s | + conditionals, de-risking |
 | Niche tooling | `moa ask "..."` (auto-researches) | ~$0.10 | 15s | + sources |
-| Deep research | `moa ask --research deep "..."` | ~$0.25 | 45s | + citations |
+| Deep research (one focused question) | `moa ask --research deep "..."` | ~$0.25 | 45s | + citations |
+| Research brief (multi-angle compare) | `moa research "..."` | ~$0.40 | 90s | + decomp, [N] citations, Sources block |
+| Research brief (shallow / faster) | `moa research --depth shallow "..."` | ~$0.15 | 30s | 1 search round per sub-q |
 | Code review | `moa review --staged` | ~$0.10 | 20s | |
 | Persona review | `moa review --staged --persona "name"` | ~$0.05 | 15s | |
 | Peer debate | `moa debate "..."` | ~$0.20 | 60s | + conditionals, de-risking |

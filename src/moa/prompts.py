@@ -364,6 +364,28 @@ Rules:
 - Include exact tool/library/framework names from the question
 - Keep each query under 10 words
 
+**Named-entity rule (CRITICAL — avoids ranking by SEO content farms):**
+
+If the question names a specific product, company, vendor, framework, or \
+service (a proper noun — capitalized brand/tool name), AT LEAST ONE of your \
+queries MUST use a `site:` modifier or include the entity's plausible domain \
+directly. Default heuristic: lowercase the entity name + `.com` is usually \
+correct (Beehiiv → beehiiv.com, Stripe → stripe.com, Notion → notion.so or \
+notion.com — pick the one most likely to host product docs).
+
+Examples:
+- Q: "What are Beehiiv's 2025 pricing tiers?"
+  ✅ ["site:beehiiv.com pricing", "Beehiiv pricing 2025 official documentation"]
+  ❌ ["Beehiiv pricing comparison", "newsletter platform pricing 2025"]
+- Q: "How does Stripe's recurring billing fee work?"
+  ✅ ["site:stripe.com recurring billing fees", "Stripe Billing 2025 pricing"]
+- Q: "What is event sourcing?" (no named entity → no site: needed)
+  ✅ ["event sourcing pattern definition", "event sourcing vs CQRS"]
+
+The point: search engines over-rank critique blogs and aggregator content farms \
+for `<entity> pricing` type queries. `site:` modifiers force the vendor's own \
+authoritative pages.
+
 Respond with ONLY a JSON object, no other text:
 {"queries": ["search query 1", "search query 2"]}"""
 
@@ -447,4 +469,130 @@ Synthesize into this exact format:
 
 Responses:
 {proposals}"""
+
+
+# ── Research-brief mode (moa research) ───────────────────────────────────────
+# Pattern: decompose -> parallel research per sub-question -> parallel worker
+# synthesis -> final brief assembly with [N] citations. Different from
+# DEEP_RESEARCH_SYNTHESIS_PROMPT (which feeds ONE blob to ONE model).
+
+RESEARCH_DECOMPOSITION_PROMPT = """You decompose research questions into 3-5 \
+focused sub-questions that together answer the original.
+
+Rules:
+- Each sub-question must be independently researchable on the web.
+- Cover distinct aspects — don't repeat the same angle in different words.
+- Order from broadest to most specific.
+- Skip sub-questions that are pure opinion or unanswerable from public sources.
+- **Phrase each sub-question so it would surface authoritative primary sources** \
+(official documentation, vendor pricing pages, peer-reviewed work, regulatory \
+filings, primary reporting) — not opinion blogs or aggregators.
+
+**Multi-entity / comparison rule (CRITICAL):**
+
+If the original question compares, contrasts, or asks about switching between \
+two or more named entities (products, companies, technologies, frameworks, \
+people, places — e.g., "X vs Y", "switch from X to Y", "compare X and Y", \
+"X or Y for ___"), your decomposition MUST include AT LEAST ONE dedicated \
+sub-question per named entity, framed to surface that entity's own \
+authoritative documentation.
+
+Example — original: "Should I switch from Substack to Beehiiv for my newsletter?"
+- ✅ "What are Substack's 2025 pricing tiers and revenue share terms per their \
+official documentation?"
+- ✅ "What are Beehiiv's 2025 pricing tiers, paid-tier features, and ad/sponsor \
+revenue terms per their official documentation?"
+- ✅ "What does each platform document about subscriber-list portability and \
+custom-domain ownership during migration?"
+- ❌ "What's the difference between Substack and Beehiiv?" (too vague — search \
+results will be opinion blogs)
+- ❌ "Which is better, Substack or Beehiiv?" (opinion question, not researchable)
+
+The point: comparison queries fail when search returns only critique-of-X \
+articles. Per-entity sub-questions force the search engine to surface each \
+entity's own sources.
+
+Return ONLY a JSON object, no prose:
+{"sub_questions": ["...", "...", "..."]}"""
+
+
+RESEARCH_WORKER_SYNTHESIS_PROMPT = """You answer ONE sub-question using only the \
+research material provided. Be source-grounded.
+
+Rules:
+- Every factual claim must cite its source as [N] where N is the source index \
+in the order they appear in the research material.
+- If sources disagree, surface the disagreement and cite both sides.
+- If the research material doesn't actually answer the sub-question, say so \
+explicitly — do NOT fall back to general knowledge.
+- Be tight. ~150-300 words. No throat-clearing, no "in conclusion".
+
+Output format (markdown):
+## <restate sub-question as a short heading>
+
+<answer body with [N] citations inline>"""
+
+
+RESEARCH_GAP_ANALYSIS_PROMPT = """You are a research gap analyzer. You receive \
+the original question, the sub-questions used, and each worker's output.
+
+Identify sub-questions where the worker said the research material was \
+insufficient — common signals: "research material doesn't provide", "not \
+available in the research material", "(no research material found)", "sources \
+don't detail", "research material lacks", "no [X] data available".
+
+For each gap, generate ONE highly targeted web search query that would surface \
+the missing information. Favor:
+- Official documentation queries (entity name + "documentation" / "pricing page" \
+/ "features")
+- Year-bounded queries when the gap is about current state (append "2025" or \
+"2026")
+- Domain-targeted queries when an obvious authoritative source exists (e.g., \
+"beehiiv.com pricing" rather than "beehiiv pricing comparison")
+
+Return ONLY a JSON object, no prose:
+{"gap_queries": ["...", "...", "..."]}
+
+If NO meaningful gaps exist (all sub-questions adequately answered), return:
+{"gap_queries": []}
+
+Maximum 5 gap queries — focus on the most consequential gaps for answering the \
+original question. Skip gaps that are minor or unlikely to be answerable from \
+public sources."""
+
+
+RESEARCH_BRIEF_SYNTHESIS_PROMPT = """You assemble a research brief from \
+sub-question worker outputs.
+
+You receive: the original question, the decomposition into sub-questions, and \
+each worker's answer (already cited with [N] markers).
+
+Produce a coherent brief with this exact structure:
+
+# <Title — short, concrete, not generic>
+
+## TL;DR
+<2-4 sentences that actually answer the user's question. Lead with the answer, \
+not the question.>
+
+## Findings
+<For each sub-question, a clear section. Reuse the worker outputs but smooth the \
+prose so the brief reads as one document. Preserve the [N] citation markers \
+exactly.>
+
+## Open questions
+<1-3 questions that the research could not answer with confidence. Skip if \
+nothing applies.>
+
+## Sources
+<Numbered list. Use the deduplicated source URLs the workers cited. Format: \
+`N. <title> — <url>`>
+
+Discipline:
+- Do not invent claims. If a worker said "the research material doesn't answer \
+this", carry that forward — don't paper over the gap.
+- Preserve every [N] marker the workers used. Re-number across the full brief \
+so [N] indexes match the final Sources list.
+- No moralizing, no "this is a complex topic" filler."""
+
 

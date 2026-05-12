@@ -1,6 +1,7 @@
 """CLI interface for the multi-model AI debate system."""
 
 import asyncio
+import time
 import logging
 import subprocess
 import sys
@@ -862,6 +863,74 @@ def _write_debate_transcript(result: dict, query: str, rounds: int, style: str):
 
     filepath.write_text("\n".join(lines))
     console.print(f"[dim]  📄 Full transcript: {filepath}[/dim]")
+
+
+@app.command()
+def research(
+    query: str = typer.Argument(..., help="The research question"),
+    depth: str = typer.Option("deep", "--depth", "-d", help="deep (2 search rounds per sub-q) or shallow (1 round)"),
+    export: Optional[str] = typer.Option(None, "--export", help="Export brief to a markdown file path"),
+    raw: bool = typer.Option(False, "--raw", "-r", help="Print only the brief body — no header/cost"),
+):
+    """Multi-agent research brief: decompose → parallel research per sub-question → assemble cited brief.
+
+    Differs from `moa debate` (which produces a Verdict/Decision Tree shape for binary decisions)
+    and from `moa ask --research deep` (which feeds ONE big context blob to ONE synthesizer).
+    Best for *explainers* and *comparisons* where the user wants concrete citations.
+    """
+    from .adaptive import run_research_brief
+
+    if depth not in ("deep", "shallow"):
+        console.print(f"[red]Invalid --depth '{depth}'. Use 'deep' or 'shallow'.[/red]")
+        raise typer.Exit(code=2)
+
+    progress_lines: list[str] = []
+
+    def _on_progress(msg: str):
+        progress_lines.append(msg)
+        if not raw:
+            console.print(f"[dim]  · {msg}[/dim]")
+
+    try:
+        result = asyncio.run(run_research_brief(query, depth=depth, on_progress=_on_progress))
+    except RuntimeError as e:
+        console.print(f"[red]✗ {e}[/red]")
+        raise typer.Exit(code=1)
+
+    body = result["response"]
+
+    if raw:
+        console.print(body)
+    else:
+        console.print(Panel(Markdown(body), title="Research Brief", border_style="cyan"))
+        cost = result["cost"]
+        total_tokens = cost.total_input_tokens + cost.total_output_tokens
+        console.print(
+            f"  [bold]${cost.estimated_cost_usd:.4f}[/bold]  ·  "
+            f"{total_tokens:,} tokens  ·  ⏱  {result['latency_ms']}ms  ·  "
+            f"📋 {len(result['sub_questions'])} sub-question(s)  ·  "
+            f"🤖 synth: {result['synthesizer']}"
+        )
+
+    if export:
+        from pathlib import Path
+        path = Path(export).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [
+            f"# Research Brief — {query}",
+            "",
+            f"**Date:** {time.strftime('%Y-%m-%d %H:%M')}",
+            f"**Depth:** {depth}",
+            f"**Synthesizer:** {result['synthesizer']}",
+            f"**Cost:** ${result['cost'].estimated_cost_usd:.4f}",
+            f"**Tokens:** {result['cost'].total_input_tokens + result['cost'].total_output_tokens:,}",
+            "",
+            "---",
+            "",
+            body,
+        ]
+        path.write_text("\n".join(lines))
+        console.print(f"[dim]  📄 Exported: {path}[/dim]")
 
 
 @app.command()

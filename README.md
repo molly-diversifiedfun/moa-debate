@@ -2,7 +2,7 @@
 
 **One LLM gives one guess. moa-debate picks 3-5 models from different providers for every question, then makes them debate — or searches the web when they disagree.**
 
-![tests](https://img.shields.io/badge/tests-197%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-208%20passing-brightgreen)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-purple)
 ![roster](https://img.shields.io/badge/model%20roster-14-orange)
@@ -175,6 +175,7 @@ moa ask --debug "..."                                     # see exactly what was
 moa ask "..."                     # Multi-model query (adaptive routing)
 moa compare "..."                 # Single model vs ensemble side-by-side
 moa debate "..."                  # Multi-round debate (peer or adversarial)
+moa research "..."                # Multi-agent research brief with citations
 moa review --staged               # Expert panel code review
 moa outcome list --stats          # Accuracy tracking for past debates
 moa templates                     # List decision templates
@@ -196,7 +197,8 @@ moa serve                         # HTTP API server
 | `--research` | ask | `auto` | `auto`, `lite`, `deep`, `off` |
 | `--style` | debate | `peer` | `peer`, `adversarial` |
 | `--template` | debate | auto-detect | `hire`, `build`, `invest`, or custom YAML |
-| `--export` | debate | — | Export transcript: `html` or `md` |
+| `--depth` | research | `deep` | `deep` (2 search rounds per sub-q), `shallow` (1 round) |
+| `--export` | debate, research | — | Export transcript/brief: `html`, `md`, or file path |
 | `--discourse` | review | off | Reviewers react to each other |
 | `--personas` | review | off | Use code review personas |
 | `--layers` | ask | 1 | Aggregation layers (1-3) |

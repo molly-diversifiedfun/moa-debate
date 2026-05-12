@@ -12,6 +12,7 @@ Every mode uses structured prompt templates in `src/moa/prompts.py`:
 - **Challenge prompts** instruct models to find flaws, not just agree. "You MUST identify at least one flaw per response."
 - **Persona prompts** inject philosophy: "You think like Rich Hickey. Ask: 'Is this simple or just easy?'"
 - **Research context** is injected as reference material with a framing that tells models to reason independently: "Use it if applicable, but do not assume this information is complete."
+- **Research-brief prompts** (`moa research`): three-stage chain — `RESEARCH_DECOMPOSITION_PROMPT` (classifier decomposes the question into 3-5 sub-questions, JSON output), `RESEARCH_WORKER_SYNTHESIS_PROMPT` (per-sub-question worker compresses pooled findings into a `## heading + body` with inline `[N]` citation markers; explicit rules against falling back to general knowledge), `RESEARCH_BRIEF_SYNTHESIS_PROMPT` (Opus synthesizer assembles `# Title / TL;DR / Findings / Open questions / Sources` with deduplicated source numbering).
 
 All prompts live in a single file — edit `src/moa/prompts.py` directly to change model behavior.
 
