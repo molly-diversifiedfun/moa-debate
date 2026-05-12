@@ -722,6 +722,131 @@ async def run_deep_research(query: str) -> Dict[str, Any]:
     }
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  RESEARCH BRIEF — decompose → parallel workers → synthesizer with citations
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def run_research_brief(
+    query: str,
+    depth: str = "deep",
+    on_progress: Optional[callable] = None,
+) -> Dict[str, Any]:
+    """Multi-agent research mode. Differs from run_deep_research (one big context
+    blob → one synthesizer) by decomposing into sub-questions and running parallel
+    research+worker passes per sub-question, then assembling a cited brief.
+
+    depth='deep' uses deep_research (2 search rounds) per sub-question.
+    depth='shallow' uses lite_search (1 round) per sub-question — cheaper, faster.
+    """
+    from .research import (
+        decompose_query, deep_research, lite_search, get_search_provider,
+        format_research_context, collect_unique_sources,
+    )
+    from .prompts import (
+        RESEARCH_WORKER_SYNTHESIS_PROMPT,
+        RESEARCH_BRIEF_SYNTHESIS_PROMPT,
+    )
+
+    _check_budget_or_raise()
+    start = time.monotonic()
+    cost = QueryCost(tier=f"research-brief-{depth}")
+
+    provider = get_search_provider()
+    if not provider:
+        raise RuntimeError(
+            "Research brief requires a search provider. "
+            "Set FIRECRAWL_API_KEY or install ddgs for the free fallback."
+        )
+
+    def _emit(msg: str):
+        if on_progress:
+            on_progress(msg)
+
+    # 1. Plan
+    _emit("Decomposing question…")
+    sub_questions = await decompose_query(query)
+    _emit(f"Plan: {len(sub_questions)} sub-question(s).")
+
+    # 2. Parallel per-sub-question research + worker synthesis
+    async def _research_one(sub_q: str) -> Dict[str, Any]:
+        if depth == "shallow":
+            ctx = await lite_search(sub_q, provider)
+        else:
+            ctx = await deep_research(sub_q, provider)
+        if not ctx:
+            return {"sub_question": sub_q, "answer": "(no research material found)", "context": ""}
+
+        worker_model = get_aggregator(prefer_premium=False)
+        result = await call_model(
+            worker_model,
+            [
+                {"role": "system", "content": RESEARCH_WORKER_SYNTHESIS_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"[RESEARCH MATERIAL]\n{ctx}\n[/RESEARCH MATERIAL]\n\n"
+                        f"Sub-question: {sub_q}"
+                    ),
+                },
+            ],
+            temperature=0.1,
+            timeout=AGGREGATOR_TIMEOUT_SECONDS,
+        )
+        if not result:
+            return {"sub_question": sub_q, "answer": "(worker model failed)", "context": ctx}
+
+        _update_cost(cost, result, is_aggregator=False)
+        return {"sub_question": sub_q, "answer": result["content"], "context": ctx}
+
+    _emit(f"Researching {len(sub_questions)} sub-question(s) in parallel…")
+    worker_outputs = await asyncio.gather(*[_research_one(q) for q in sub_questions])
+
+    # 3. Final synthesis
+    _emit("Synthesizing brief…")
+    sub_q_block = "\n".join(f"{i+1}. {w['sub_question']}" for i, w in enumerate(worker_outputs))
+    worker_block = "\n\n".join(
+        f"### Worker {i+1} (sub-question: {w['sub_question']})\n\n{w['answer']}"
+        for i, w in enumerate(worker_outputs)
+    )
+
+    synth_model = get_aggregator(prefer_premium=True)
+    synth = await call_model(
+        synth_model,
+        [
+            {"role": "system", "content": RESEARCH_BRIEF_SYNTHESIS_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Original question: {query}\n\n"
+                    f"Sub-questions:\n{sub_q_block}\n\n"
+                    f"Worker outputs:\n{worker_block}"
+                ),
+            },
+        ],
+        temperature=0.2,
+        timeout=AGGREGATOR_TIMEOUT_SECONDS,
+    )
+    if not synth:
+        raise RuntimeError("Brief synthesis model failed.")
+    _update_cost(cost, synth, is_aggregator=True)
+
+    elapsed = int((time.monotonic() - start) * 1000)
+    record_spend(cost.estimated_cost_usd)
+
+    return {
+        "response": synth["content"],
+        "sub_questions": sub_questions,
+        "worker_outputs": [
+            {"sub_question": w["sub_question"], "answer": w["answer"]}
+            for w in worker_outputs
+        ],
+        "cost": cost,
+        "latency_ms": elapsed,
+        "depth": depth,
+        "synthesizer": synth_model.name,
+    }
+
+
 # ═════════��═══════════════════════════════���════════════════════════════════════
 #  COMPARE — single model vs ensemble side-by-side
 # ═══════════════════���════════════��═════════════════════════════════════════════

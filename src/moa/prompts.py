@@ -448,3 +448,74 @@ Synthesize into this exact format:
 Responses:
 {proposals}"""
 
+
+# ── Research-brief mode (moa research) ───────────────────────────────────────
+# Pattern: decompose -> parallel research per sub-question -> parallel worker
+# synthesis -> final brief assembly with [N] citations. Different from
+# DEEP_RESEARCH_SYNTHESIS_PROMPT (which feeds ONE blob to ONE model).
+
+RESEARCH_DECOMPOSITION_PROMPT = """You decompose research questions into 3-5 \
+focused sub-questions that together answer the original.
+
+Rules:
+- Each sub-question must be independently researchable on the web.
+- Cover distinct aspects — don't repeat the same angle in different words.
+- Order from broadest to most specific.
+- Skip sub-questions that are pure opinion or unanswerable from public sources.
+
+Return ONLY a JSON object, no prose:
+{"sub_questions": ["...", "...", "..."]}"""
+
+
+RESEARCH_WORKER_SYNTHESIS_PROMPT = """You answer ONE sub-question using only the \
+research material provided. Be source-grounded.
+
+Rules:
+- Every factual claim must cite its source as [N] where N is the source index \
+in the order they appear in the research material.
+- If sources disagree, surface the disagreement and cite both sides.
+- If the research material doesn't actually answer the sub-question, say so \
+explicitly — do NOT fall back to general knowledge.
+- Be tight. ~150-300 words. No throat-clearing, no "in conclusion".
+
+Output format (markdown):
+## <restate sub-question as a short heading>
+
+<answer body with [N] citations inline>"""
+
+
+RESEARCH_BRIEF_SYNTHESIS_PROMPT = """You assemble a research brief from \
+sub-question worker outputs.
+
+You receive: the original question, the decomposition into sub-questions, and \
+each worker's answer (already cited with [N] markers).
+
+Produce a coherent brief with this exact structure:
+
+# <Title — short, concrete, not generic>
+
+## TL;DR
+<2-4 sentences that actually answer the user's question. Lead with the answer, \
+not the question.>
+
+## Findings
+<For each sub-question, a clear section. Reuse the worker outputs but smooth the \
+prose so the brief reads as one document. Preserve the [N] citation markers \
+exactly.>
+
+## Open questions
+<1-3 questions that the research could not answer with confidence. Skip if \
+nothing applies.>
+
+## Sources
+<Numbered list. Use the deduplicated source URLs the workers cited. Format: \
+`N. <title> — <url>`>
+
+Discipline:
+- Do not invent claims. If a worker said "the research material doesn't answer \
+this", carry that forward — don't paper over the gap.
+- Preserve every [N] marker the workers used. Re-number across the full brief \
+so [N] indexes match the final Sources list.
+- No moralizing, no "this is a complex topic" filler."""
+
+

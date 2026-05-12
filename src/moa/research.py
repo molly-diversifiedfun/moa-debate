@@ -327,3 +327,58 @@ def format_research_context(results: List[SearchResult], max_chars: int = 4096) 
         "information is complete or authoritative."
     )
     return f"{header}\n\n" + "\n\n---\n\n".join(parts)
+
+
+# ── Query decomposition for research-brief mode ──────────────────────────────
+
+async def decompose_query(query: str) -> List[str]:
+    """Use a cheap classifier model to decompose a research question into
+    3-5 focused sub-questions. Returns [query] on any failure so the caller
+    can fall back to single-question research."""
+    from .models import CLASSIFIER_MODEL, CLAUDE_HAIKU
+    from .engine import call_model
+    from .prompts import RESEARCH_DECOMPOSITION_PROMPT
+
+    model = CLASSIFIER_MODEL if CLASSIFIER_MODEL.available else CLAUDE_HAIKU
+    if not model or not model.available:
+        return [query]
+
+    result = await call_model(
+        model,
+        [
+            {"role": "system", "content": RESEARCH_DECOMPOSITION_PROMPT},
+            {"role": "user", "content": query},
+        ],
+        temperature=0.0,
+        max_tokens=400,
+        timeout=15,
+    )
+
+    if not result:
+        return [query]
+
+    try:
+        text = result["content"].strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        parsed = json.loads(text)
+        sub_questions = parsed.get("sub_questions", [])
+        if not isinstance(sub_questions, list) or not sub_questions:
+            return [query]
+        return [str(q) for q in sub_questions[:5] if isinstance(q, str) and q.strip()]
+    except (json.JSONDecodeError, KeyError, AttributeError):
+        return [query]
+
+
+# ── Source dedup for research brief ──────────────────────────────────────────
+
+def collect_unique_sources(results: List[SearchResult]) -> List[SearchResult]:
+    """Deduplicate SearchResults by URL, preserving first-seen order."""
+    seen: set = set()
+    unique: List[SearchResult] = []
+    for r in results:
+        if not r.url or r.url in seen:
+            continue
+        seen.add(r.url)
+        unique.append(r)
+    return unique
