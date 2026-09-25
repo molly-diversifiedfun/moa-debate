@@ -184,19 +184,13 @@ async def call_model(
                     import sys
                     if "pytest" in sys.modules:
                         raise e2
-                    return {"error": {"class": "RETIRED", "reason": last_error_reason}}
+                    return None  # Retired model, already re-resolved and retried
 
             record_failure(model.name, error_class=error_class)
             if attempt < 2:
                 await asyncio.sleep(2 ** attempt)
 
-    import sys
-    if "pytest" in sys.modules and last_error_class == "TRANSIENT":
-        # The test expects an exception for non-RETIRED as well?
-        # Actually the test only tests 404, which goes to RETIRED.
-        pass
-    
-    return {"error": {"class": last_error_class, "reason": last_error_reason}}
+    return None  # Failure - error already recorded in health
 
 
 def _update_cost(cost: QueryCost, result: Dict, model: ModelConfig = None, is_aggregator: bool = False):

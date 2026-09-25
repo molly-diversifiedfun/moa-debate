@@ -460,11 +460,11 @@ async def opening(state: DebateState) -> DebateState:
     )
     state.on_progress(ev.fight_stop())
 
-    angel_failed = not angel_r or "error" in angel_r
-    devil_failed = not devil_r or "error" in devil_r
+    angel_failed = not angel_r
+    devil_failed = not devil_r
     
-    state.angel_pos = angel_r.get("content", "") if angel_r and "content" in angel_r else ""
-    state.devil_pos = devil_r.get("content", "") if devil_r and "content" in devil_r else ""
+    state.angel_pos = angel_r["content"] if angel_r else ""
+    state.devil_pos = devil_r["content"] if devil_r else ""
 
     if angel_r and not angel_failed:
         _update_cost(state.cost, angel_r)
@@ -512,7 +512,7 @@ async def opening(state: DebateState) -> DebateState:
                 {"role": "system", "content": angel_system},
                 {"role": "user", "content": state.query},
             ])
-            if fb and "content" in fb:
+            if fb:
                 state.angel_pos = fb["content"]
                 _update_cost(state.cost, fb)
                 angel_short = _short_name(state.angel_model)
@@ -548,7 +548,7 @@ async def opening(state: DebateState) -> DebateState:
                     {"role": "system", "content": DEBATE_ANGEL_SYSTEM.format(previous_round="This is your opening argument.")},
                     {"role": "user", "content": state.query},
                 ])
-                if fb and "content" in fb:
+            if fb:
                     state.angel_pos = fb["content"]
                     _update_cost(state.cost, fb)
                     state.model_status[f"👼 {angel_short}"] = f"✅ R0:{fb.get('latency_s', 0)}s (fallback)"
