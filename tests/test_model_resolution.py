@@ -203,3 +203,47 @@ def test_tests_never_touch_the_real_moa_home():
     import conftest
     real = Path(conftest._original_home) / ".moa"
     assert not str(config.MOA_HOME).startswith(str(real))
+
+
+# ── newer models reject temperature; health follows the resolved id ──────────
+
+class BadRequest(Exception):
+    status_code = 400
+
+
+def test_temperature_rejected_retries_without_it_and_remembers():
+    from moa import orchestrator
+    calls = []
+
+    async def fake(model, **kw):
+        calls.append(("temperature" in kw, model))
+        if "temperature" in kw:
+            raise BadRequest('{"type":"invalid_request_error","message":"`temperature` is deprecated for this model."}')
+        return ok(model)
+    with patch.object(resolve, "list_provider_models", side_effect=listing), \
+         patch.object(orchestrator, "acompletion", side_effect=fake):
+        r1 = run(orchestrator.call_model(CLAUDE_SONNET, [{"role": "user", "content": "x"}]))
+        r2 = run(orchestrator.call_model(CLAUDE_SONNET, [{"role": "user", "content": "x"}]))
+    assert r1 and r2
+    # first call learns; the second goes straight to the no-temperature form
+    assert calls == [(True, "anthropic/claude-sonnet-5"), (False, "anthropic/claude-sonnet-5"),
+                     (False, "anthropic/claude-sonnet-5")]
+
+
+def test_openai_default_only_temperature_is_detected():
+    assert resolve.rejects_temperature(BadRequest(
+        "Unsupported value: 'temperature' does not support 0.7 with this model. Only the default (1) value is supported."))
+    assert not resolve.rejects_temperature(BadRequest("max_tokens is too large"))
+
+
+def test_old_failures_on_the_roster_name_do_not_block_the_resolved_id():
+    from moa import health, orchestrator
+    for _ in range(5):
+        health.record_failure(CLAUDE_SONNET.name, error_class="RETIRED")
+
+    async def fake(model, **kw):
+        return ok(model)
+    with patch.object(resolve, "list_provider_models", side_effect=listing), \
+         patch.object(orchestrator, "acompletion", side_effect=fake):
+        r = run(orchestrator.call_model(CLAUDE_SONNET, [{"role": "user", "content": "x"}]))
+    assert r and r["model"] == "anthropic/claude-sonnet-5"

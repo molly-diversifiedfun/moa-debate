@@ -65,10 +65,14 @@ async def call_model(
     'provider', 'cost_usd', 'latency_s' or None on total failure.
     """
     from .health import should_skip, record_success, record_failure, get_timeout_for_attempt
-    from .resolve import resolve_model, mark_retired, is_not_found
+    from .resolve import (resolve_model, mark_retired, is_not_found,
+                          rejects_temperature, omits_temperature, mark_no_temperature)
 
-    # Circuit breaker: skip models that are consistently failing
-    skip_reason = should_skip(model.name)
+    model_id, _source = resolve_model(model)
+
+    # Circuit breaker, keyed by the resolved id: failures of a retired dated id
+    # must not lock out the family once it resolves to a working one.
+    skip_reason = should_skip(model_id)
     if skip_reason:
         return None
 
@@ -78,29 +82,24 @@ async def call_model(
 
     start = time.monotonic()
     last_error = None
-    model_id, _source = resolve_model(model)
     re_resolved = False
+    temp_retried = False
 
     for attempt in range(3):
         call_timeout = get_timeout_for_attempt(base_timeout, attempt)
         try:
             sem = _get_semaphore(model.provider)
             async with sem:
-                resp = await asyncio.wait_for(
-                    acompletion(
-                        model=model_id,
-                        messages=messages,
-                        temperature=temp,
-                        max_tokens=max_tok,
-                    ),
-                    timeout=call_timeout,
-                )
+                params = {"model": model_id, "messages": messages, "max_tokens": max_tok}
+                if not omits_temperature(model_id):
+                    params["temperature"] = temp
+                resp = await asyncio.wait_for(acompletion(**params), timeout=call_timeout)
             elapsed = time.monotonic() - start
             usage = resp.get("usage", {})
             input_tok = usage.get("prompt_tokens", 0)
             output_tok = usage.get("completion_tokens", 0)
 
-            record_success(model.name)
+            record_success(model_id)
             return {
                 "content": resp.choices[0].message.content,
                 "input_tokens": input_tok,
@@ -112,21 +111,26 @@ async def call_model(
             }
         except asyncio.TimeoutError:
             last_error = f"timeout ({call_timeout}s)"
-            record_failure(model.name, error_class="TIMEOUT")
+            record_failure(model_id, error_class="TIMEOUT")
             break  # Don't retry timeouts
         except Exception as e:
             last_error = str(e)[:100]
+            if rejects_temperature(e) and not temp_retried:
+                # A request-shape error, not a model failure: learn and resend.
+                mark_no_temperature(model_id)
+                temp_retried = True
+                continue
             if is_not_found(e):
                 # The id is gone (retired), not flaky: retire it and try the
                 # family's next-newest id once. No backoff, no circuit-breaker hit.
                 mark_retired(model, model_id)
                 next_id, _ = resolve_model(model)
                 if re_resolved or next_id == model_id:
-                    record_failure(model.name, error_class="RETIRED")
+                    record_failure(model_id, error_class="RETIRED")
                     break
                 model_id, re_resolved = next_id, True
                 continue
-            record_failure(model.name, error_class="TRANSIENT")
+            record_failure(model_id, error_class="TRANSIENT")
             if attempt < 2:
                 await asyncio.sleep(2 ** attempt)
 

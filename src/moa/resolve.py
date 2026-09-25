@@ -128,7 +128,7 @@ def _override(family_key: str) -> Optional[str]:
 def resolve_model(model) -> Tuple[str, str]:
     """(litellm id, source) for a ModelConfig. Never raises."""
     family_key = getattr(model, "family", None)
-    if not family_key:
+    if not isinstance(family_key, str) or family_key not in FAMILIES:
         return model.name, "pinned"
     override = _override(family_key)
     if override:
@@ -166,3 +166,25 @@ def is_not_found(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
     text = str(exc)
     return status == 404 or "not_found_error" in text or "model_not_found" in text
+
+
+# ── per-id parameter quirks ──────────────────────────────────────────────────
+# Newer models reject `temperature` outright (Anthropic: "temperature is
+# deprecated for this model"; OpenAI: "does not support 0.7 ... Only the
+# default (1) value is supported"). Learn it once per id and stop sending it.
+
+def rejects_temperature(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "temperature" in text and ("deprecated" in text or "unsupported" in text or "not support" in text)
+
+
+def omits_temperature(litellm_id: str) -> bool:
+    return litellm_id in _load_cache().get("no_temperature", [])
+
+
+def mark_no_temperature(litellm_id: str) -> None:
+    cache = _load_cache()
+    ids = cache.setdefault("no_temperature", [])
+    if litellm_id not in ids:
+        ids.append(litellm_id)
+        _save_cache(cache)

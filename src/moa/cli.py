@@ -1026,7 +1026,8 @@ def health():
     for model in ALL_MODELS:
         if not model.available:
             continue
-        h = get_health(model.name)
+        from .resolve import resolve_model
+        h = get_health(resolve_model(model)[0])
         short = model.name.split("/")[-1] if "/" in model.name else model.name
 
         state = h.state
