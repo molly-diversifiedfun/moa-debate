@@ -781,6 +781,80 @@ def debate(
         console.print(f"[bold green]📄 Exported: {filename}[/bold green]")
 
 
+@app.command("models")
+def cli_models():
+    """Print resolved model roster with cache status."""
+    from .models import get_model_override, resolve_model_family, available_models, MOA_HOME
+    from .health import should_skip
+    import time, json, os
+
+    cache_file = MOA_HOME / "model-cache.json"
+    cache_data = {}
+    if cache_file.exists():
+        try:
+            cache_data = json.loads(cache_file.read_text())
+        except Exception:
+            pass
+
+    all_available = available_models()
+    healthy = [m for m in all_available if not should_skip(m.name)]
+    if len(healthy) < 2:
+        healthy = all_available
+    ranked = sorted(healthy, key=lambda m: m.output_cost_per_mtok, reverse=True)
+    
+    default_angel = ranked[0] if ranked else None
+    default_devil = next((m for m in ranked[1:] if m.provider != (default_angel.provider if default_angel else "")), ranked[1]) if len(ranked) > 1 else None
+
+    roles = {"angel": default_angel, "devil": default_devil}
+
+    for role, default_model in roles.items():
+        if not default_model:
+            continue
+        
+        override = get_model_override("debate", role)
+        source = ""
+        resolved_id = ""
+        
+        if override:
+            env_specific = f"MOA_{role.upper()}_DEBATE_MODEL"
+            env_general = f"MOA_{role.upper()}_MODEL"
+            if env_specific in os.environ:
+                source = f"override, env {env_specific}"
+            elif env_general in os.environ:
+                source = f"override, env {env_general}"
+            else:
+                source = "override, pinned"
+            resolved_id = override.split("/")[-1] if "/" in override else override
+            print(f"{role}: {resolved_id} (source: {source})")
+        else:
+            actual_name = default_model.name
+            is_family = "/" not in actual_name
+            if is_family:
+                provider = default_model.provider
+                family = actual_name
+            else:
+                provider = default_model.provider
+                base = actual_name.split("/")[-1].lower()
+                family = base
+                for f in ["opus", "sonnet", "haiku"]:
+                    if f in base:
+                        family = f
+                        break
+            
+            cache_key = f"{provider}:{family}"
+            if cache_key in cache_data:
+                entry = cache_data[cache_key]
+                resolved_id = entry["id"].split("/")[-1] if "/" in entry["id"] else entry["id"]
+                hours = int((time.time() - entry.get("resolved_at", time.time())) / 3600)
+                source = f"cache, resolved {hours}h ago"
+            else:
+                resolved_id = resolve_model_family(provider, family)
+                source = "listed, resolved 0h ago"
+                resolved_id = resolved_id.split("/")[-1] if "/" in resolved_id else resolved_id
+            print(f"{role}: {resolved_id} (source: {source})")
+
+
+
 def _write_debate_transcript(result: dict, query: str, rounds: int, style: str):
     """Write full debate transcript to ~/.moa/debates/ as markdown."""
     import datetime

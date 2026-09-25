@@ -633,3 +633,124 @@ class QueryCost:
             f"Tokens: {self.total_input_tokens:,}in + {self.total_output_tokens:,}out | "
             f"Est. cost: ${self.estimated_cost_usd:.4f}"
         )
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MODEL FAMILY RESOLUTION
+# ══════════════════════════════════════════════════════════════════════════════
+
+import json
+import time
+import os
+import yaml
+import litellm
+if not hasattr(litellm, "list_models"):
+    litellm.list_models = lambda: {}
+from .config import MOA_HOME
+
+def resolve_model_family(provider: str, family: str, fallback_id: Optional[str] = None) -> str:
+    """Resolve a family (e.g. 'opus', 'sonnet') to newest available model ID.
+    
+    Logic:
+    1. Check ~/.moa/model-cache.json: if fresh (< 24h), return cached ID
+    2. Call provider's list-models API endpoint (via litellm.list_models)
+    3. Filter to models matching family (e.g. family='opus' matches 'claude-opus-*')
+    4. Sort by 'created' timestamp, pick newest
+    5. Cache result with 24h TTL
+    6. On error: use cached result if exists (even if expired), else use fallback_id
+    7. Never raise — always return valid ID or fallback
+    """
+    cache_file = MOA_HOME / "model-cache.json"
+    cache_key = f"{provider}:{family}"
+    
+    if cache_file.exists():
+        try:
+            cache_data = json.loads(cache_file.read_text())
+            if cache_key in cache_data:
+                entry = cache_data[cache_key]
+                if time.time() < entry.get("ttl_expires_at", 0):
+                    return entry["id"]
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    try:
+        response = litellm.list_models()
+        data = response.get("data", [])
+        
+        matching = [m for m in data if family.lower() in str(m.get("id", "")).lower()]
+        if not matching:
+            raise ValueError(f"No models found for family {family}")
+
+        matching.sort(key=lambda m: m.get("created", 0), reverse=True)
+        best_id = matching[0]["id"]
+        
+        MOA_HOME.mkdir(exist_ok=True)
+        cache_data = {}
+        if cache_file.exists():
+            try:
+                cache_data = json.loads(cache_file.read_text())
+            except json.JSONDecodeError:
+                pass
+        
+        now = time.time()
+        cache_data[cache_key] = {
+            "id": best_id,
+            "resolved_at": now,
+            "ttl_expires_at": now + 86400,
+        }
+        cache_file.write_text(json.dumps(cache_data, indent=2))
+        return best_id
+    except Exception:
+        if cache_file.exists():
+            try:
+                cache_data = json.loads(cache_file.read_text())
+                if cache_key in cache_data:
+                    return cache_data[cache_key]["id"]
+            except (json.JSONDecodeError, KeyError):
+                pass
+        return fallback_id
+
+def invalidate_model_cache(provider: str, family: str) -> None:
+    """Delete specific family from cache to force re-resolution."""
+    cache_file = MOA_HOME / "model-cache.json"
+    if cache_file.exists():
+        try:
+            cache_data = json.loads(cache_file.read_text())
+            cache_key = f"{provider}:{family}"
+            if cache_key in cache_data:
+                del cache_data[cache_key]
+                cache_file.write_text(json.dumps(cache_data, indent=2))
+        except json.JSONDecodeError:
+            pass
+
+def classify_error(status_code: int, error_type: str) -> str:
+    """Classify error as 'RETIRED' (404) or 'TRANSIENT' (429/5xx/timeout)."""
+    if status_code == 404:
+        return "RETIRED"
+    return "TRANSIENT"
+
+def get_model_override(context: str, role: str) -> Optional[str]:
+    """Get pinned model ID from ~/.moa/models.yaml or MOA_*_MODEL env vars.
+    
+    Priority (highest first):
+    1. MOA_{ROLE}_{CONTEXT}_MODEL env var (e.g. MOA_ANGEL_MODEL)
+    2. ~/.moa/models.yaml under [context][role]
+    3. None (use resolution)
+    """
+    env_var_specific = f"MOA_{role.upper()}_{context.upper()}_MODEL"
+    env_var_general = f"MOA_{role.upper()}_MODEL"
+    
+    if env_var_specific in os.environ:
+        return os.environ[env_var_specific]
+    if env_var_general in os.environ:
+        return os.environ[env_var_general]
+        
+    config_file = MOA_HOME / "models.yaml"
+    if config_file.exists():
+        try:
+            with open(config_file) as f:
+                config = yaml.safe_load(f)
+                if config and context in config and role in config[context]:
+                    return config[context][role]
+        except Exception:
+            pass
+    return None
