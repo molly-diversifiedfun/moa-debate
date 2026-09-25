@@ -1,344 +1,205 @@
-"""Tests for model family resolution and retired model handling.
+"""Model resolution: roster entries name a FAMILY; the id is resolved at call time.
 
-Tests the new dynamic model resolution system that replaces hardcoded dated IDs
-with family-based resolution against real provider list-models endpoints.
+A dated id retiring (Anthropic 404 not_found_error) must never break moa again:
+call_model re-resolves the family and retries once, for every caller.
 """
-
-import json
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock, call
-from pathlib import Path
-import tempfile
-import time
+import asyncio
 import os
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from moa.models import ModelConfig, available_models, TIERS
-from moa.health import record_failure, get_health, ModelHealth
-from moa.config import MOA_HOME
+import pytest
 
-
-# ── Model family roster resolution ────────────────────────────────────────────
-
-def test_resolve_opus_family_picks_newest_by_created_date():
-    """Family resolution picks newest ID by created timestamp from provider list."""
-    from moa.models import resolve_model_family
-    
-    # Mock Anthropic API response with multiple opus versions
-    mock_api_response = {
-        "data": [
-            {"id": "claude-opus-5-5", "created": 1735689600},         # newest
-            {"id": "claude-opus-4-20250514", "created": 1734000000},
-            {"id": "claude-opus-4-20240229", "created": 1700000000},
-        ]
-    }
-    
-    with patch("moa.models.litellm.list_models") as mock_list:
-        mock_list.return_value = mock_api_response
-        result = resolve_model_family("anthropic", "opus")
-        assert result == "claude-opus-5-5", f"Expected newest ID, got {result}"
+from moa import config, resolve
+from moa.models import CLAUDE_HAIKU, CLAUDE_OPUS, CLAUDE_SONNET, GPT_4_1
 
 
-def test_resolve_sonnet_family_picks_newest():
-    """Family resolution for Sonnet picks newest version."""
-    from moa.models import resolve_model_family
-    
-    mock_api_response = {
-        "data": [
-            {"id": "claude-sonnet-5", "created": 1735689600},
-            {"id": "claude-sonnet-4-20250514", "created": 1734000000},
-        ]
-    }
-    
-    with patch("moa.models.litellm.list_models") as mock_list:
-        mock_list.return_value = mock_api_response
-        result = resolve_model_family("anthropic", "sonnet")
-        assert result == "claude-sonnet-5"
+ANTHROPIC_IDS = [
+    "claude-opus-4-20250514", "claude-opus-4-5-20251101", "claude-opus-4-8",
+    "claude-opus-5", "claude-opus-5-5", "claude-sonnet-4-5-20250929",
+    "claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-fable-5-1",
+]
+OPENAI_IDS = [
+    "gpt-4.1", "gpt-4.1-mini", "gpt-5", "gpt-5-pro", "gpt-5.4", "gpt-5.4-mini",
+    "gpt-5.5", "gpt-5.5-pro", "gpt-5.6-luna", "gpt-6-astra", "gpt-5.2-codex",
+]
 
 
-def test_resolve_model_family_caches_result_with_24h_ttl():
-    """Resolved model family IDs are cached in ~/.moa/model-cache.json."""
-    from moa.models import resolve_model_family
-    
-    cache_file = MOA_HOME / "model-cache.json"
-    
-    # Clean up any existing cache
-    if cache_file.exists():
-        cache_file.unlink()
-    
-    mock_api_response = {
-        "data": [
-            {"id": "claude-opus-5-5", "created": 1735689600},
-        ]
-    }
-    
-    with patch("moa.models.litellm.list_models") as mock_list:
-        mock_list.return_value = mock_api_response
-        result = resolve_model_family("anthropic", "opus")
-        
-        # Verify cache file was created
-        assert cache_file.exists(), f"Cache file not created at {cache_file}"
-        
-        # Verify format
-        cache_data = json.loads(cache_file.read_text())
-        assert "anthropic:opus" in cache_data
-        assert cache_data["anthropic:opus"]["id"] == "claude-opus-5-5"
-        assert "resolved_at" in cache_data["anthropic:opus"]
-        assert "ttl_expires_at" in cache_data["anthropic:opus"]
-        
-        # Verify TTL is ~24h
-        ttl_seconds = cache_data["anthropic:opus"]["ttl_expires_at"] - cache_data["anthropic:opus"]["resolved_at"]
-        assert 86400 <= ttl_seconds <= 86500, f"Expected ~24h TTL, got {ttl_seconds}s"
+@pytest.fixture(autouse=True)
+def clean_state(monkeypatch):
+    for f in ("model-cache.json", "models.yaml"):
+        p = config.MOA_HOME / f
+        if p.exists():
+            p.unlink()
+    for k in list(os.environ):
+        if k.startswith("MOA_MODEL_"):
+            monkeypatch.delenv(k)
+    from moa import health
+    monkeypatch.setattr(health, "_health_cache", {})
+    monkeypatch.setattr(health, "_loaded", True)
+    monkeypatch.setattr(health, "_save", lambda: None)
 
 
-def test_resolve_model_family_uses_cache_if_valid():
-    """If cache is fresh (< 24h), use it instead of re-listing."""
-    from moa.models import resolve_model_family
-    
-    cache_file = MOA_HOME / "model-cache.json"
-    MOA_HOME.mkdir(exist_ok=True)
-    
-    now = time.time()
-    cache_data = {
-        "anthropic:opus": {
-            "id": "claude-opus-5-5",
-            "resolved_at": now - 3600,  # 1h ago
-            "ttl_expires_at": now + 86400 - 3600,  # expires in ~23h
-        }
-    }
-    cache_file.write_text(json.dumps(cache_data))
-    
-    # Mock should NOT be called if cache is used
-    with patch("moa.models.litellm.list_models") as mock_list:
-        result = resolve_model_family("anthropic", "opus")
-        assert result == "claude-opus-5-5"
-        # Verify API was NOT called
-        mock_list.assert_not_called()
+def listing(provider):
+    return {"anthropic": ANTHROPIC_IDS, "openai": OPENAI_IDS}[provider]
 
 
-def test_resolve_model_family_re_lists_if_cache_expired():
-    """If cache is stale (> 24h), re-list from provider."""
-    from moa.models import resolve_model_family
-    
-    cache_file = MOA_HOME / "model-cache.json"
-    MOA_HOME.mkdir(exist_ok=True)
-    
-    now = time.time()
-    old_cache = {
-        "anthropic:opus": {
-            "id": "claude-opus-4-20250514",  # old
-            "resolved_at": now - 86401,  # > 24h ago, expired
-            "ttl_expires_at": now - 1,
-        }
-    }
-    cache_file.write_text(json.dumps(old_cache))
-    
-    mock_api_response = {
-        "data": [
-            {"id": "claude-opus-5-5", "created": 1735689600},  # newer
-        ]
-    }
-    
-    with patch("moa.models.litellm.list_models") as mock_list:
-        mock_list.return_value = mock_api_response
-        result = resolve_model_family("anthropic", "opus")
-        assert result == "claude-opus-5-5"
-        # Verify API WAS called because cache expired
-        mock_list.assert_called()
+def run(coro):
+    return asyncio.new_event_loop().run_until_complete(coro)
 
 
-def test_resolve_model_family_falls_back_to_cache_on_network_error():
-    """If listing fails (network error), use cached result if available."""
-    from moa.models import resolve_model_family
-    
-    cache_file = MOA_HOME / "model-cache.json"
-    MOA_HOME.mkdir(exist_ok=True)
-    
-    now = time.time()
-    cache_data = {
-        "anthropic:opus": {
-            "id": "claude-opus-5-5",
-            "resolved_at": now - 86401,  # expired but still use it
-            "ttl_expires_at": now - 1,
-        }
-    }
-    cache_file.write_text(json.dumps(cache_data))
-    
-    # Simulate network error
-    with patch("moa.models.litellm.list_models") as mock_list:
-        mock_list.side_effect = Exception("Network timeout")
-        result = resolve_model_family("anthropic", "opus")
-        # Should use cache despite expiration when network fails
-        assert result == "claude-opus-5-5"
+# ── picking the newest member of a family ────────────────────────────────────
+
+@pytest.mark.parametrize("family,expected", [
+    ("anthropic:opus", "anthropic/claude-opus-5-5"),
+    ("anthropic:sonnet", "anthropic/claude-sonnet-5"),
+    ("anthropic:haiku", "anthropic/claude-haiku-4-5-20251001"),
+    # plain gpt-N(.M) only: not -pro, -mini, -codex or named variants like gpt-6-astra
+    ("openai:flagship", "gpt-5.5"),
+])
+def test_newest_member_of_each_family(family, expected):
+    assert resolve.pick_newest(family, listing(resolve.FAMILIES[family].provider)) == expected
 
 
-def test_resolve_model_family_falls_back_to_pinned_id_if_no_cache():
-    """If listing fails and no cache, fall back to pinned/fallback ID."""
-    from moa.models import resolve_model_family
-    
-    cache_file = MOA_HOME / "model-cache.json"
-    if cache_file.exists():
-        cache_file.unlink()
-    
-    # Simulate network error with no cache
-    with patch("moa.models.litellm.list_models") as mock_list:
-        mock_list.side_effect = Exception("Network error")
-        result = resolve_model_family("anthropic", "opus", fallback_id="claude-opus-4-20250514")
-        # Should use provided fallback
-        assert result == "claude-opus-4-20250514"
+def test_date_suffix_is_not_read_as_a_minor_version():
+    # claude-opus-4-20250514 is 4.0 (dated), older than 4.5
+    ids = ["claude-opus-4-20250514", "claude-opus-4-5-20251101"]
+    assert resolve.pick_newest("anthropic:opus", ids) == "anthropic/claude-opus-4-5-20251101"
 
 
-def test_resolve_model_family_never_crashes():
-    """Model resolution must never crash, always has a fallback."""
-    from moa.models import resolve_model_family
-    
-    # No cache, no fallback provided, but should still return something
-    cache_file = MOA_HOME / "model-cache.json"
-    if cache_file.exists():
-        cache_file.unlink()
-    
-    with patch("moa.models.litellm.list_models") as mock_list:
-        mock_list.side_effect = Exception("Catastrophic failure")
-        # Should not raise, should return something sensible
-        result = resolve_model_family("anthropic", "opus", fallback_id="claude-opus-4-20250514")
-        assert result is not None
+def test_no_member_listed_returns_none():
+    assert resolve.pick_newest("anthropic:opus", ["claude-sonnet-5"]) is None
 
 
-# ── Retired model detection and classification ────────────────────────────────
+# ── resolve_model: override > fresh cache > listing > stale cache > pinned ─────
 
-def test_call_model_detects_404_as_retired_not_transient():
-    """The classify_error function correctly identifies 404 as RETIRED."""
-    from moa.models import classify_error
-    assert classify_error(404, "not_found_error") == "RETIRED"
-    assert classify_error(429, "rate_limit_error") == "TRANSIENT"
+def test_unfamilied_model_uses_its_pinned_name():
+    assert GPT_4_1.family is None
+    assert resolve.resolve_model(GPT_4_1) == (GPT_4_1.name, "pinned")
 
 
-def test_retired_model_invalidates_cache_entry():
-    """When a model is detected as retired, its cache entry is deleted."""
-    from moa.models import invalidate_model_cache
-    
-    cache_file = MOA_HOME / "model-cache.json"
-    MOA_HOME.mkdir(exist_ok=True)
-    
-    cache_data = {
-        "anthropic:opus": {"id": "claude-opus-4-20250514", "resolved_at": 123},
-        "anthropic:sonnet": {"id": "claude-sonnet-4-20250514", "resolved_at": 456},
-    }
-    cache_file.write_text(json.dumps(cache_data))
-    
-    # Invalidate opus
-    invalidate_model_cache("anthropic", "opus")
-    
-    # Verify opus entry deleted, sonnet still there
-    remaining = json.loads(cache_file.read_text())
-    assert "anthropic:opus" not in remaining
-    assert "anthropic:sonnet" in remaining
+def test_lists_and_caches():
+    with patch.object(resolve, "list_provider_models", side_effect=listing) as lister:
+        assert resolve.resolve_model(CLAUDE_OPUS) == ("anthropic/claude-opus-5-5", "listed")
+        assert resolve.resolve_model(CLAUDE_OPUS) == ("anthropic/claude-opus-5-5", "cache")
+    assert lister.call_count == 1
 
 
-def test_error_classification_distinguishes_retired_from_transient():
-    """Error codes are correctly classified: 404→RETIRED, 429→TRANSIENT."""
-    from moa.models import classify_error
-    
-    assert classify_error(404, "not_found_error") == "RETIRED"
-    assert classify_error(429, "rate_limit_error") == "TRANSIENT"
-    assert classify_error(500, "server_error") == "TRANSIENT"
-    assert classify_error(503, "unavailable") == "TRANSIENT"
+def test_stale_cache_relists():
+    with patch.object(resolve, "list_provider_models", side_effect=listing):
+        resolve.resolve_model(CLAUDE_OPUS)
+    later = time.time() + 25 * 3600
+    with patch.object(resolve.time, "time", return_value=later), \
+         patch.object(resolve, "list_provider_models", return_value=["claude-opus-6"]):
+        assert resolve.resolve_model(CLAUDE_OPUS) == ("anthropic/claude-opus-6", "listed")
 
 
-# ── Override mechanism ────────────────────────────────────────────────────────
-
-def test_model_override_from_models_yaml():
-    """Override file ~/.moa/models.yaml can pin specific model IDs per role."""
-    from moa.models import get_model_override
-    
-    config_file = MOA_HOME / "models.yaml"
-    MOA_HOME.mkdir(exist_ok=True)
-    
-    config_file.write_text("""
-debate:
-  angel: "anthropic/claude-opus-5-5"
-  devil: "openai/gpt-5.4"
-""")
-    
-    angel_override = get_model_override("debate", "angel")
-    devil_override = get_model_override("debate", "devil")
-    
-    assert angel_override == "anthropic/claude-opus-5-5"
-    assert devil_override == "openai/gpt-5.4"
-    
-    # Clean up
-    config_file.unlink()
+def test_listing_failure_uses_stale_cache_then_pinned():
+    with patch.object(resolve, "list_provider_models", side_effect=RuntimeError("down")):
+        assert resolve.resolve_model(CLAUDE_SONNET) == (CLAUDE_SONNET.name, "pinned")
+    with patch.object(resolve, "list_provider_models", side_effect=listing):
+        resolve.resolve_model(CLAUDE_SONNET)
+    later = time.time() + 25 * 3600
+    with patch.object(resolve.time, "time", return_value=later), \
+         patch.object(resolve, "list_provider_models", side_effect=RuntimeError("down")):
+        assert resolve.resolve_model(CLAUDE_SONNET) == ("anthropic/claude-sonnet-5", "stale-cache")
 
 
-def test_model_override_from_env_var():
-    """Environment variables MOA_ANGEL_MODEL override files and resolution."""
-    from moa.models import get_model_override
-    
-    with patch.dict(os.environ, {"MOA_ANGEL_MODEL": "anthropic/claude-opus-5-5"}):
-        override = get_model_override("debate", "angel")
-        assert override == "anthropic/claude-opus-5-5"
+def test_env_override_wins(monkeypatch):
+    monkeypatch.setenv("MOA_MODEL_ANTHROPIC_OPUS", "anthropic/claude-opus-4-8")
+    with patch.object(resolve, "list_provider_models", side_effect=AssertionError("must not list")):
+        assert resolve.resolve_model(CLAUDE_OPUS) == ("anthropic/claude-opus-4-8", "override")
 
 
-# ── moa models command ─────────────────────────────────────────────────────────
-
-def test_moa_models_command_shows_resolved_roster():
-    """The `moa models` command prints current resolved model IDs."""
-    from moa.cli import cli_models
-    from io import StringIO
-    
-    # This would be integration tested, but we can test the function
-    # Mock the resolution
-    with patch("moa.models.resolve_model_family") as mock_resolve:
-        mock_resolve.side_effect = lambda p, f, **kw: {
-            ("anthropic", "opus"): "claude-opus-5-5",
-            ("anthropic", "sonnet"): "claude-sonnet-5",
-        }.get((p, f), f"{p}/{f}")
-        
-        output = StringIO()
-        with patch("sys.stdout", output):
-            import sys
-            # Would call cli_models() here and verify output
-            assert True  # Placeholder for integration test
+def test_yaml_override_wins():
+    (config.MOA_HOME / "models.yaml").write_text('"anthropic:opus": anthropic/claude-opus-5\n')
+    with patch.object(resolve, "list_provider_models", side_effect=AssertionError("must not list")):
+        assert resolve.resolve_model(CLAUDE_OPUS) == ("anthropic/claude-opus-5", "override")
 
 
-# ── Integration: opening with retired models ──────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_opening_handles_one_side_retired():
-    """Health tracking and cache invalidation work for retired models."""
-    from moa.health import get_health, record_failure
-    from moa.models import invalidate_model_cache
-    from moa.config import MOA_HOME
-    import json
-    
-    # When a 404 is recorded with RETIRED classification
-    record_failure("anthropic/claude-opus-4-20250514", error_class="RETIRED")
-    health = get_health("anthropic/claude-opus-4-20250514")
-    assert health.last_error_class == "RETIRED"
-    
-    # Cache invalidation should work
-    MOA_HOME.mkdir(exist_ok=True)
-    cache_file = MOA_HOME / "model-cache.json"
-    cache_file.write_text(json.dumps({"anthropic:opus": {"id": "claude-opus-4-20250514"}}))
-    invalidate_model_cache("anthropic", "opus")
-    
-    cache_data = json.loads(cache_file.read_text())
-    assert "anthropic:opus" not in cache_data
+def test_retired_id_is_never_resolved_again():
+    with patch.object(resolve, "list_provider_models", side_effect=listing):
+        resolve.mark_retired(CLAUDE_OPUS, "anthropic/claude-opus-5-5")
+        assert resolve.resolve_model(CLAUDE_OPUS) == ("anthropic/claude-opus-5", "listed")
 
 
+# ── call_model: a 404 retires the id, re-resolves, retries once ───────────────
 
-# ── Backward compatibility ────────────────────────────────────────────────────
-
-def test_existing_models_registry_backward_compatible():
-    """Existing ModelConfig objects still work with new resolution system."""
-    from moa.models import TIERS, CLAUDE_OPUS, CLAUDE_SONNET
-    
-    # Old configs should still have name attribute
-    assert hasattr(CLAUDE_OPUS, "name")
-    assert hasattr(CLAUDE_SONNET, "name")
-    
-    # Tiers should still work
-    assert "pro" in TIERS
-    pro_tier = TIERS["pro"]
-    assert len(pro_tier.proposers) > 0
+class NotFound(Exception):
+    status_code = 404
 
 
+def ok(model_name):
+    return SimpleNamespace(
+        get=lambda k, d=None: {"prompt_tokens": 3, "completion_tokens": 2} if k == "usage" else d,
+        choices=[SimpleNamespace(message=SimpleNamespace(content=f"hi from {model_name}"))],
+    )
+
+
+def test_call_model_uses_the_resolved_id():
+    from moa import orchestrator
+    seen = []
+
+    async def fake(model, **kw):
+        seen.append(model)
+        return ok(model)
+    with patch.object(resolve, "list_provider_models", side_effect=listing), \
+         patch.object(orchestrator, "acompletion", side_effect=fake):
+        r = run(orchestrator.call_model(CLAUDE_OPUS, [{"role": "user", "content": "x"}]))
+    assert seen == ["anthropic/claude-opus-5-5"]
+    assert r["model"] == "anthropic/claude-opus-5-5"
+
+
+def test_call_model_retires_a_404_and_retries_once_with_the_next_id():
+    from moa import orchestrator
+    seen = []
+
+    async def fake(model, **kw):
+        seen.append(model)
+        if model == "anthropic/claude-opus-5-5":
+            raise NotFound('{"type":"not_found_error","message":"model: claude-opus-5-5"}')
+        return ok(model)
+    with patch.object(resolve, "list_provider_models", side_effect=listing), \
+         patch.object(orchestrator, "acompletion", side_effect=fake):
+        r = run(orchestrator.call_model(CLAUDE_OPUS, [{"role": "user", "content": "x"}]))
+    assert seen == ["anthropic/claude-opus-5-5", "anthropic/claude-opus-5"]
+    assert r["content"] == "hi from anthropic/claude-opus-5"
+
+
+def test_call_model_does_not_retire_on_429():
+    from moa import orchestrator
+
+    class RateLimited(Exception):
+        status_code = 429
+
+    async def fake(model, **kw):
+        raise RateLimited("rate limited")
+
+    async def no_sleep(_s):
+        return None
+    with patch.object(resolve, "list_provider_models", side_effect=listing), \
+         patch.object(orchestrator, "acompletion", side_effect=fake), \
+         patch.object(orchestrator.asyncio, "sleep", side_effect=no_sleep):
+        assert run(orchestrator.call_model(CLAUDE_SONNET, [{"role": "user", "content": "x"}])) is None
+    assert "anthropic/claude-sonnet-5" not in resolve._load_cache().get("retired", [])
+
+
+def test_call_model_failure_still_returns_none():
+    # the contract ~40 call sites rely on
+    from moa import orchestrator
+
+    async def fake(model, **kw):
+        raise NotFound("not_found_error")
+    with patch.object(resolve, "list_provider_models", side_effect=listing), \
+         patch.object(orchestrator, "acompletion", side_effect=fake):
+        assert run(orchestrator.call_model(CLAUDE_HAIKU, [{"role": "user", "content": "x"}])) is None
+
+
+# ── nothing touches the real home ─────────────────────────────────────────────
+
+def test_tests_never_touch_the_real_moa_home():
+    import conftest
+    real = Path(conftest._original_home) / ".moa"
+    assert not str(config.MOA_HOME).startswith(str(real))
