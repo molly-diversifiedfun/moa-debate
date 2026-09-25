@@ -85,7 +85,10 @@ async def call_model(
     re_resolved = False
     temp_retried = False
 
-    for attempt in range(3):
+    # `attempt` counts real failures only: resending with a corrected request
+    # (temperature dropped, retired id replaced) keeps the same full timeout.
+    attempt = 0
+    while attempt < 3:
         call_timeout = get_timeout_for_attempt(base_timeout, attempt)
         try:
             sem = _get_semaphore(model.provider)
@@ -131,8 +134,9 @@ async def call_model(
                 model_id, re_resolved = next_id, True
                 continue
             record_failure(model_id, error_class="TRANSIENT")
-            if attempt < 2:
-                await asyncio.sleep(2 ** attempt)
+            attempt += 1
+            if attempt < 3:
+                await asyncio.sleep(2 ** (attempt - 1))
 
     return None
 

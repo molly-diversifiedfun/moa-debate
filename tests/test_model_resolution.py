@@ -247,3 +247,28 @@ def test_old_failures_on_the_roster_name_do_not_block_the_resolved_id():
          patch.object(orchestrator, "acompletion", side_effect=fake):
         r = run(orchestrator.call_model(CLAUDE_SONNET, [{"role": "user", "content": "x"}]))
     assert r and r["model"] == "anthropic/claude-sonnet-5"
+
+
+def test_request_shape_resends_keep_the_full_timeout():
+    # Relearning temperature or re-resolving a retired id is not a failed
+    # attempt: the resend must not get the halved backoff timeout.
+    from moa import orchestrator
+    timeouts = []
+    real_wait_for = asyncio.wait_for
+
+    async def spy_wait_for(aw, timeout):
+        timeouts.append(timeout)
+        return await real_wait_for(aw, timeout)
+
+    async def fake(model, **kw):
+        if model == "anthropic/claude-opus-5-5":
+            raise NotFound("not_found_error")
+        if "temperature" in kw:
+            raise BadRequest("`temperature` is deprecated for this model.")
+        return ok(model)
+    with patch.object(resolve, "list_provider_models", side_effect=listing), \
+         patch.object(orchestrator, "acompletion", side_effect=fake), \
+         patch.object(orchestrator.asyncio, "wait_for", side_effect=spy_wait_for):
+        r = run(orchestrator.call_model(CLAUDE_OPUS, [{"role": "user", "content": "x"}], timeout=90))
+    assert r
+    assert timeouts == [90, 90, 90]
