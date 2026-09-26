@@ -7,6 +7,7 @@ from typing import Dict
 from litellm import acompletion
 
 from .models import ALL_MODELS, ModelConfig
+from .resolve import resolve_model
 
 
 async def verify_single_model(model: ModelConfig) -> Dict:
@@ -19,11 +20,12 @@ async def verify_single_model(model: ModelConfig) -> Dict:
             "reason": f"No {model.env_key} set",
         }
 
+    model_id, source = resolve_model(model)
     start = time.monotonic()
     try:
         resp = await asyncio.wait_for(
             acompletion(
-                model=model.name,
+                model=model_id,
                 messages=[{"role": "user", "content": "Say hello in one word."}],
                 max_tokens=10,
                 temperature=0.0,
@@ -33,7 +35,7 @@ async def verify_single_model(model: ModelConfig) -> Dict:
         elapsed = time.monotonic() - start
         content = resp.choices[0].message.content.strip()
         return {
-            "model": model.name,
+            "model": model_id if model_id == model.name else f"{model_id} ({source}, roster: {model.name})",
             "provider": model.provider,
             "status": "ok",
             "latency_s": round(elapsed, 2),

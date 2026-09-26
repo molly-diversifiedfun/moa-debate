@@ -355,7 +355,8 @@ async def select_models(state: DebateState) -> DebateState:
         raise ValueError(f"Unknown tier: {state.tier_name}")
 
     all_available = get_all_available()
-    healthy = [m for m in all_available if not should_skip(m.name)]
+    from .resolve import resolve_model
+    healthy = [m for m in all_available if not should_skip(resolve_model(m)[0])]
     if len(healthy) < 2:
         healthy = all_available
     if len(healthy) < 2:
@@ -373,7 +374,7 @@ async def select_models(state: DebateState) -> DebateState:
     # Log skipped unhealthy models
     all_ranked = sorted(all_available, key=lambda m: m.output_cost_per_mtok, reverse=True)
     if all_ranked[0].name != state.angel_model.name or (len(all_ranked) > 1 and all_ranked[1].name != state.devil_model.name):
-        skipped_names = [m.name.split("/")[-1] for m in all_ranked if should_skip(m.name)]
+        skipped_names = [resolve_model(m)[0].split("/")[-1] for m in all_ranked if should_skip(resolve_model(m)[0])]
         if skipped_names:
             state.on_progress(ev.skipped_unhealthy(skipped_names))
 

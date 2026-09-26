@@ -33,6 +33,8 @@ class ModelHealth:
     last_success_ts: float = 0.0
     total_failures_1h: int = 0
     total_successes_1h: int = 0
+    last_error_class: str = ""
+    last_error_reason: str = ""
 
     @property
     def is_open(self) -> bool:
@@ -95,6 +97,8 @@ def _load() -> None:
                 last_success_ts=entry.get("last_success_ts", 0),
                 total_failures_1h=entry.get("total_failures_1h", 0),
                 total_successes_1h=entry.get("total_successes_1h", 0),
+                last_error_class=entry.get("last_error_class", ""),
+                last_error_reason=entry.get("last_error_reason", ""),
             )
     except (json.JSONDecodeError, KeyError):
         _health_cache = {}
@@ -111,6 +115,8 @@ def _save() -> None:
             "last_success_ts": h.last_success_ts,
             "total_failures_1h": h.total_failures_1h,
             "total_successes_1h": h.total_successes_1h,
+            "last_error_class": h.last_error_class,
+            "last_error_reason": h.last_error_reason,
         }
     HEALTH_FILE.write_text(json.dumps(data, indent=2))
 
@@ -146,7 +152,7 @@ def record_success(model_name: str) -> None:
     _save()
 
 
-def record_failure(model_name: str) -> None:
+def record_failure(model_name: str, error_class: str = "") -> None:
     """Record a failed model call. May open circuit breaker."""
     if not _loaded:
         _load()
@@ -154,6 +160,7 @@ def record_failure(model_name: str) -> None:
     health.consecutive_failures += 1
     health.last_failure_ts = time.time()
     health.total_failures_1h += 1
+    health.last_error_class = error_class
     _health_cache[model_name] = health
     _save()
 

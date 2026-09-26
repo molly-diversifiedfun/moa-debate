@@ -16,6 +16,7 @@ class ModelConfig:
     max_tokens: int = 4096       # Max output tokens
     temperature: float = 0.7     # Default temperature
     strengths: List[str] = field(default_factory=list)  # What this model excels at
+    family: Optional[str] = None  # resolve.FAMILIES key; resolved to the newest id at call time
 
     @property
     def available(self) -> bool:
@@ -30,6 +31,7 @@ class ModelConfig:
 # ── Anthropic ──────────────────────────────────────────────────────────────────
 
 CLAUDE_OPUS = ModelConfig(
+    family="anthropic:opus",
     name="anthropic/claude-opus-4-20250514",
     provider="Anthropic",
     env_key="ANTHROPIC_API_KEY",
@@ -40,6 +42,7 @@ CLAUDE_OPUS = ModelConfig(
 )
 
 CLAUDE_SONNET = ModelConfig(
+    family="anthropic:sonnet",
     name="anthropic/claude-sonnet-4-20250514",
     provider="Anthropic",
     env_key="ANTHROPIC_API_KEY",
@@ -50,6 +53,7 @@ CLAUDE_SONNET = ModelConfig(
 )
 
 CLAUDE_HAIKU = ModelConfig(
+    family="anthropic:haiku",
     name="anthropic/claude-haiku-4-5-20251001",
     provider="Anthropic",
     env_key="ANTHROPIC_API_KEY",
@@ -62,6 +66,7 @@ CLAUDE_HAIKU = ModelConfig(
 # ── OpenAI ─────────────────────────────────────────────────────────────────────
 
 GPT_5_4 = ModelConfig(
+    family="openai:flagship",
     name="gpt-5.4",
     provider="OpenAI",
     env_key="OPENAI_API_KEY",

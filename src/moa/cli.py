@@ -1026,7 +1026,8 @@ def health():
     for model in ALL_MODELS:
         if not model.available:
             continue
-        h = get_health(model.name)
+        from .resolve import resolve_model
+        h = get_health(resolve_model(model)[0])
         short = model.name.split("/")[-1] if "/" in model.name else model.name
 
         state = h.state
@@ -1226,6 +1227,22 @@ def status():
     console.print(f"  7-day: ${budget['week']:.4f} | 30-day: ${budget['month']:.4f}")
     console.print()
     console.print(f"[dim]Config: {GLOBAL_ENV} | Home: {MOA_HOME}[/dim]")
+
+
+@app.command()
+def models():
+    """Show which real model id each roster family resolves to, and why."""
+    from .models import ALL_MODELS
+    from .resolve import resolve_model
+
+    for m in ALL_MODELS:
+        if not m.family:
+            continue
+        if not m.available:
+            console.print(f"{m.family:18} [dim]skipped: {m.env_key} not set[/dim]")
+            continue
+        model_id, source = resolve_model(m)
+        console.print(f"{m.family:18} {model_id}  [dim]({source}; roster {m.name})[/dim]")
 
 
 @app.command()
